@@ -126,3 +126,68 @@ class BaseTask:
         """任务中截图"""
         # 调用 device 的截图功能，tag 是任务名
         pass # 实际调用 basic.py
+
+    # ==========================================
+    # 📊 游戏信息读取 (Game Info)
+    # ==========================================
+    def get_current_stamina(self):
+        """
+        读取当前体力值
+        流程: 确保主页 -> 点头像 -> 点加号 -> OCR -> Back x2
+        :return: int (当前体力)
+        """
+        from airtest.core.api import Template
+        
+        # 0. 检查分辨率 (仅首次或必要时检查，这里假设每次任务前检查更稳妥)
+        if not self.device.check_resolution():
+            return 0
+
+        # 1. 确保在主页
+        if not self.device.ensure_home():
+            self.logger.error("无法回到主页，放弃读取体力")
+            return 0
+            
+        # 2. 点击头像 (8, 8, 80, 80)
+        # Airtest 的 touch 支持绝对坐标 (x, y)
+        # 我们取中心点 (44, 44)
+        self.logger.info("点击头像进入 Profile")
+        self.device.click((44, 44))
+        self.device.sleep(2) # 等待动画
+        
+        # 3. 点击加号进入体力页
+        # 假设加号图片是 assets/images/profile_plus.png
+        img_plus = Template(r"assets/images/profile_plus.png")
+        if not self.device.exists(img_plus):
+            self.logger.error("未找到体力加号按钮")
+            self.device.press_back() # 尝试退回
+            return 0
+            
+        self.logger.info("点击加号查看体力")
+        self.device.click(img_plus)
+        self.device.sleep(1.5)
+        
+        # 4. OCR 识别
+        # 区域: (350, 270, 480, 300)
+        area = (350, 270, 480, 300) 
+        text = self.device.get_text(area)
+        self.logger.debug(f"OCR Stamina Raw: {text}")
+        
+        # 5. 解析 "100/200" 格式
+        if "/" in text:
+            current_str = text.split("/")[0]
+        else:
+            current_str = text
+        val = self.device.parse_number(current_str)
+        
+        # 6. 更新到 DataStore
+        self.data.set_stat("stamina", val)
+        self.logger.info(f"当前体力: {val}")
+        
+        # 7. 返回主页 (Back x2)
+        self.logger.info("返回主页")
+        self.device.press_back()
+        self.device.sleep(1)
+        self.device.press_back()
+        self.device.sleep(1)
+        
+        return val

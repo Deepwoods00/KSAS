@@ -99,6 +99,34 @@ class DeviceOperator:
 
         self._is_connected = False
 
+    def connect(self):
+        """连接设备"""
+        try:
+            # 尝试连接
+            uri = f"Android:///{self.serial}"
+            connect_device(uri)
+            self._is_connected = True
+            self.logger.info(f"设备已连接: {self.serial}")
+            return True
+        except Exception as e:
+            self.logger.error(f"设备连接失败: {e}")
+            self._is_connected = False
+            return False
+
+    def _ensure_context(self):
+        """确保当前操作针对的是本实例的设备"""
+        try:
+            set_current(self.serial)
+        except Exception:
+            self.logger.warning(f"上下文丢失 ({self.serial})，尝试重连...")
+            if self.connect():
+                try:
+                    set_current(self.serial)
+                except Exception as e:
+                    self.logger.error(f"重连后无法设置上下文: {e}")
+            else:
+                self.logger.error(f"重连失败: {self.serial}")
+
     # ==========================================
     # 🛡️ 核心装饰器：钢铁侠战衣 (Safe Wrap)
     # ==========================================
@@ -334,5 +362,78 @@ class DeviceOperator:
             return int(val * multiplier)
         except ValueError:
             return 0
+
+    # ==========================================
+    # 🏠 导航与状态 (Navigation & State)
+    # ==========================================
+    def check_resolution(self):
+        """
+        检查分辨率是否为 720x1280
+        :return: True/False
+        """
+        self._ensure_context()
+        w, h = G.DEVICE.get_current_resolution()
+        # 允许横竖屏颠倒 (720x1280 or 1280x720)
+        if (w == 720 and h == 1280) or (w == 1280 and h == 720):
+            return True
+        
+        self.logger.error(f"分辨率不匹配! 当前: {w}x{h}, 要求: 720x1280")
+        return False
+
+    @_safe_wrap
+    def ensure_home(self):
+        """
+        确保回到主页 (Robust Home Navigation)
+        策略:
+        1. Check 1: 直接检查 home_check
+        2. Check 2: 检查 island -> 点 btn_town
+        3. Check 3: 检查 btn_town -> 点 btn_town
+        4. Fallback: Back x3 -> Check -> Back x1 -> Check
+        5. Ultimate: Restart Game
+        """
+        # 图片资源路径
+        img_home = Template(r"assets/images/home_check.png")
+        img_island = Template(r"assets/images/island.png")
+        img_town_btn = Template(r"assets/images/btn_town.png")
+        
+        # --- Phase 1: 快速检查 ---
+        if exists(img_home):
+            self.logger.info("已在主页")
+            return True
+            
+        # --- Phase 2: 尝试导航回城 ---
+        if exists(img_island):
+            self.logger.info("检测到岛屿，点击回城")
+            touch(img_town_btn)
+            if wait(img_home, timeout=10): return True
+            
+        if exists(img_town_btn):
+            self.logger.info("检测到回城按钮，点击回城")
+            touch(img_town_btn)
+            if wait(img_home, timeout=10): return True
+            
+        # --- Phase 3: 暴力复位 (Force Reset) ---
+        self.logger.warning("未找到主页特征，开始尝试暴力复位 (Back x3)")
+        for _ in range(3):
+            keyevent("BACK")
+            sleep(1)
+            
+        if exists(img_home):
+            self.logger.info("暴力复位成功 (Back x3)")
+            return True
+            
+        self.logger.warning("仍未回到主页，尝试再按一次 Back")
+        keyevent("BACK")
+        sleep(2)
+        
+        if exists(img_home):
+            self.logger.info("暴力复位成功 (Back x4)")
+            return True
+            
+        # --- Phase 4: 终极保底 (Restart) ---
+        self.logger.error("无法回到主页，执行重启游戏!")
+        # 注意：这里需要传入包名，暂时假设包名已知或从配置读取
+        # self.app_restart("com.kingshot.game") # TODO: 需要包名
+        return False
 
 # 文件结束
