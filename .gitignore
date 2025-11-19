@@ -1,13 +1,62 @@
 # Virtual Environment
 .venv/
 venv/
+env/
+ENV/
 
-# Python cache
+# Python cache & artifacts
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# VSCode specific
+# Testing & Coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# IDE & Editors
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Log files
+# Project Specific - Runtime Data
+# Ignore everything in data directory
+data/*
+# But keep the directory itself by tracking this file
+!data/README.md
+
+# Logs & Temp
 *.log
+backup/
+assets/temp/
+
+# OS generated files
+.DS_Store
+Thumbs.db

@@ -1,114 +1,150 @@
-# Final Architecture Blueprint: KSAS V2 (Native Desktop Edition)
+# Final Architecture Blueprint: KSAS V3.4 (Independent Control Edition)
 
-This is a robust "three-tier decoupled" architecture, composed of four independent systems: "The DataStore," "The Scheduler," "The UI," and "The Tasks." It is supplemented by five supporting facilities: "Persistence," "Logging," "The Task Registry," "The Toolbox," and "The Launcher."
-
-This architecture is specifically designed for 7x24 stable operation, state persistence, a native UI experience, and automatic updates.
-
----
-
-## 0. 🚀 The Launcher & Auto-Updater
-
-*   **Role:** The **sole entry point** for the entire application. The user only runs this script and never runs the main program directly.
-*   **Implementation:** A `launcher.py` script located **outside** the `KSAS_v2` folder.
-*   **Responsibilities:**
-    1.  **Auto-Update:** First, it executes `git pull` (accessing your **private repository** via SSH or PAT) to get the latest code.
-    2.  **Install Dependencies:** Next, it runs `pip install -r requirements.txt` to install any new dependencies.
-    3.  **Launch:** Finally, it executes `python KSAS_v2/main.py` (your new main program) to start the application.
+**Core Design Philosophy:**
+1.  **Three-Layer Decoupling:** Complete separation of UI (Display) / Scheduler (Control) / Task (Execution).
+2.  **Per-Instance Isolation:** Each account possesses independent data, configuration, logs, and scheduling threads to prevent interference.
+3.  **Registration-Based Management:** Only devices explicitly "added" by the user are managed by the system, eliminating chaos from automatic scanning.
+4.  **Independent Control:** Each instance controls its own start/stop status, rejecting the crude "Start All" logic.
 
 ---
 
-## 1. 💾 The DataStore
+## 0. 🚀 The Launcher
 
-*   **Role:** The single "source of truth" (the company's database), managing all "state" and "configuration."
-*   **Implementation:** A global singleton `DataStore` Class (in `datastore.py`).
-*   **Responsibilities:**
-    1.  **Thread-Safe:** It must use `threading.Lock` internally to protect all data (`_stamina`, `_wolf_interval`, etc.).
-    2.  **Manage State:** Stores all dynamic data (like current stamina) and static configuration (like the stamina cost for fighting a wolf).
-    3.  **Emit Signals:** When data is changed by a `set_...` method, it **must** **emit** a signal (e.g., `stamina_changed_signal.emit(new_value)`) via PySide's signals, allowing the UI to safely receive updates.
-
----
-
-## 2. 🗄️ Persistence
-
-*   **Role:** The "hard drive save file" for the `DataStore`, preventing data loss upon script restart.
-*   **Implementation:** A local file (e.g., `data/datastore.json`).
-*   **Responsibilities:**
-    1.  **Load:** During **initialization** (`__init__`), the `DataStore` **must** first read the "save file" from `datastore.json` (if the file exists).
-    2.  **Save:** All "write" methods in the `DataStore` (like `set_stamina`), while updating the data in memory, **must** immediately write the new data back to `datastore.json`.
+* **Role:** The program's **Shell** and **Updater**.
+* **Implementation:** Independent executable (e.g., `launcher.exe`).
+* **Responsibilities:**
+    1.  **Environment Self-Check:** Ensures the runtime environment is normal.
+    2.  **Auto-Update:** Checks for versions online; downloads and replaces core files if updates are available.
+    3.  **Invoke Core:** Uses a subprocess to call `python KSAS.py` to launch the main program. Users do not run the main script directly.
 
 ---
 
-## 3. ⏰ The Central Scheduler
+## 1. 🏢 The Instance Manager
 
-*   **Role:** The "manager" that only deals with "time" and "execution."
-*   **Implementation:** A global singleton `CentralScheduler` Class (in `scheduler.py`).
-*   **Responsibilities:**
-    1.  **Schedule:** Internally maintains a core **thread-safe priority queue** (`PriorityQueue`).
-    2.  **Main Loop (`run`):** Its loop logic is to "**sleep until the next scheduled task is due**."
-    3.  **Time Standard:** Must uniformly use **UTC timestamps** (`time.time()`).
-    4.  **Error Handling:** The `run` loop, when executing `task.run()`, **must** be wrapped in a `try...except` block to catch crashes, log them, and automatically **reschedule** the task to retry after (for example) 5 minutes, preventing "silent failures."
-
----
-
-## 4. 🛠️ The Tasks
-
-*   **Role:** The "workers" responsible for all specific business logic.
-*   **Implementation:** `BaseTask` (the new contract) and `WolfTask` (the specific implementation), etc., as Classes.
-*   **Responsibilities:**
-    1.  **`run()` is the core:**
-    2.  Reads data from the `DataStore` (e.g., stamina).
-    3.  **Performs "smart diagnostics"** (e.g., calling `get_location_image` from `basic.py` to identify the current page).
-    4.  **Executes "strategy"** (e.g., `basic.click_coord(*pos)` or "return to the main page and retry").
-    5.  Writes data back to the `DataStore` (e.g., consumed stamina).
-    6.  **Self-Perpetuation:** At the end of its `run()`, the task **itself** calculates its next execution time and calls `CentralScheduler.add_task(...)` to reschedule itself.
-    7.  **Self-Termination:** If the task has completed its required number of runs, it **does not** call `add_task` at the end of `run()`, and the task finishes naturally.
+* **Role:** The device **Registry Office** and **Status Monitor**.
+* **Implementation:** Global Singleton `InstanceManager`.
+* **Core Logic:**
+    1.  **Startup Load:**
+        * Performs an ADB scan upon startup.
+        * Reads `data/device_registry.json` to load all known devices (connected or not).
+        * Initializes `DataStore` and `Scheduler` for each registered device; sets initial status to `OFFLINE`.
+    2.  **Manual Scan:**
+        * Executes `adb devices` only when the UI calls `scan_devices()`.
+        * **Registered Devices:** Updates status to `ONLINE`; UI icons light up.
+        * **Unregistered Devices:** Returns a "Candidate List", **does not automatically add them**, waits for user decision.
+    3.  **Manual Registration (Add Instance):**
+        * User selects a new device in the UI and confirms; calls `add_instance(serial, alias)`.
+        * Creates data objects and writes to `device_registry.json`.
+    4.  **Manual Removal:** Completely deletes the instance memory object and registry entry.
 
 ---
 
-## 5. 🧰 The Toolbox
+## 2. 💾 Data Center (Per-Instance DataStore)
 
-*   **Role:** A purely "dumb toolbox."
-*   **Implementation:** The `basic.py` file.
-*   **Responsibilities:**
-    1.  Provides "primitive" functions like `get_location_image(img, region=None)`, `click_coord(x, y)`, `ocr_text_in_region(region)`, etc.
-    2.  **100% Robust:** All functions **must** be wrapped in `try...except` and use `logging` to record errors. They should **never crash**.
-
----
-
-## 6. 🖥️ The Native UI (The View - PySide)
-
-*   **Role:** The native "application window" (the "remote control").
-*   **Implementation:**
-    1.  **`Qt Designer`**: Used to **drag-and-drop** to create a `.ui` file (the skin).
-    2.  **`pyside6-uic`**: Used to **compile** the `.ui` file into `ui_MainWindow.py` (the skin's code).
-    3.  **`main.py` (New)**: Your new "main entry point" (replaces `KSAS.py`). It is responsible for starting the `QApplication`, loading the "core" (`DataStore`, `Scheduler`), and displaying the window.
-*   **Replaces:** It **completely replaces** `PyWebIO`, `ui.py`, and `KSAS.py` (the server part).
+* **Role:** The **State Repository** for a single instance.
+* **Implementation:** Ordinary Class, one object per `device_id`.
+* **Responsibilities:**
+    1.  **Connection Status:** Maintains `connection_status` (ONLINE/OFFLINE).
+    2.  **Running Status:** Maintains `running_status` (IDLE/RUNNING/ERROR).
+    3.  **Config Management:** Stores task toggles and parameter settings for the instance (modifiable even when offline).
+    4.  **Signal Driving:** Emits Qt Signals to notify the UI when status or configuration changes.
 
 ---
 
-## 7. 🔌 The Glue (UI and Core)
+## 3. 🗄️ Persistence System (Structured Persistence)
 
-*   **Role:** Connects the "Native UI" and the "backend core."
-*   **Implementation:** PySide's **Signals & Slots** and **`QThread`**.
-*   **Responsibilities:**
-    1.  The backend (`Scheduler`) **must** run in a `QThread` (PySide's own thread) to prevent "freezing" the UI.
-    2.  **UI -> Backend:** In `main.py`, a button's `clicked.connect(...)` (signal) **directly** calls `GlobalScheduler.add_task(...)` (slot).
-    3.  **Backend -> UI:** The `DataStore` **must** "**emit signals**," and the UI window **must** have "**slots**" to receive these signals to safely update the stamina display or logs.
+* **Role:** File System Mapping.
+* **Directory Structure:**
+    ```text
+    root/
+    ├── data/
+    │   ├── global_settings.json       # Global Settings (ADB path, webhook URL, UI prefs)
+    │   ├── device_registry.json       # Device Registry (ID, Alias, Last Online Time)
+    │   │
+    │   ├── [device_id_A]/             # Exclusive folder for Instance A
+    │   │   ├── config.json            # Task Configuration
+    │   │   ├── runtime.log            # Runtime Logs
+    │   │   └── snapshots/             # Error Screenshot Storage
+    │   │
+    │   └── [device_id_B]/             # Exclusive folder for Instance B
+    │       ├── ...
+    ```
 
 ---
 
-## 8. 📇 The Task Registry
+## 4. ⏰ Central Scheduler (Per-Instance Scheduler)
 
-*   **Role:** A "translation dictionary" that connects "UI controls" to "Task Classes."
-*   **Implementation:** A global `dict` (in `task_registry.py`).
-*   **Responsibilities:** The `main.py` (the "glue") reads this dictionary to **dynamically generate** task checkboxes on the UI and to **know** that when a user clicks "Fight Wolf," it should instantiate the `WolfTask` Class.
+* **Role:** The **Independent Commander** for a single instance.
+* **Implementation:** Inherits `QThread`, one thread per instance.
+* **Control Logic:**
+    1.  **Independent Start/Stop:** Provides `start_scheduler()` and `stop_scheduler()` methods for independent UI buttons.
+    2.  **Safe Execution:**
+        * Refuses to start if status is `OFFLINE`.
+        * If user clicks "Stop", exits safely after the current task completes its atomic operation.
+    3.  **Crash Prevention:** Captures all Task exceptions within `run()`, triggers a snapshot, records logs, and ensures the guardian thread does not crash.
 
 ---
 
-## 9. 📝 The Logging System
+## 5. 🛠️ Task Executor (Instance-Aware Tasks)
 
-*   **Role:** The "black box" and "real-time monitor."
-*   **Implementation:** Python's built-in `logging` module + a "log bridge" in the `DataStore`.
-*   **Responsibilities:**
-    1.  **Dual Dispatch:** All `logging.info(...)` calls send messages **simultaneously** to `data/ksas.log` (for debugging) and `DataStore._log_deque` (for the UI).
-    2.  **UI Consumption:** The `DataStore`'s log bridge **must** "**emit a signal**," and the UI window **must** have a "**slot**" to receive it, in order to safely display the log in a text box (on the UI thread).
+* **Role:** Business Logic Unit.
+* **Implementation:** Subclass of `BaseTask`.
+* **Responsibilities:**
+    1.  **Context Awareness:** Must hold `instance_id` to read/write correct data.
+    2.  **Logic Execution:** Read Config -> Call Toolbox -> Update Status.
+
+---
+
+## 6. 🧰 Toolbox (Toolbox & Snapshot)
+
+* **Role:** Low-level Operations Library & Evidence Retention.
+* **Implementation:** `basic.py` (Airtest Wrapper) + `snapshot_manager.py`.
+* **Responsibilities:**
+    1.  **Safe Invocation:** Encapsulates Airtest APIs, catches low-level exceptions, returns Boolean results.
+    2.  **Snapshot Mechanism:**
+        * Calls `adb screencap` when a task errors or a key step fails.
+        * Saves the image to `data/[device_id]/snapshots/`.
+        * Returns the image path to the logging system.
+
+---
+
+## 7. 🖥️ Native UI (Multi-Instance View)
+
+* **Role:** Console / Dashboard.
+* **Core Layout:**
+    1.  **Top Toolbar:**
+        * `[ 🔄 Refresh Connection ]`: Manually triggers ADB scan, updates online status.
+        * `[ ➕ Add Device ]`: Pops up a dialog to select and add from scanned unknown devices.
+        * `[ ⚙️ Global Settings ]`: Modifies general configs like ADB path.
+    2.  **Instance Area (Tab Widget or List):**
+        * **Dynamic Rendering:** Generates tabs based on `device_registry`.
+        * **Independent Control Panel (Inside each tab):**
+            * **Status Bar:** Displays Alias, Connection Status (Lit/Grayed), Current Stamina/AP.
+            * **Operation Area:** `[ ▶ Start Script ]` / `[ ⏹ Stop Script ]` (Mutually exclusive buttons).
+            * **Config Area:** Task checkbox list.
+            * **Log Area:** Scrolling log exclusive to this instance (includes screenshot links).
+
+---
+
+## 8. 🔌 Core Glue (Glue Code)
+
+* **Role:** Signal Routing.
+* **Mechanism:**
+    * **UI Button -> Scheduler:** Clicking "Start" for Instance A directly calls `instance_manager.get_scheduler(A).start()`.
+    * **DataStore -> UI:** If only Instance A's stamina changes, only Instance A's UI controls are refreshed, avoiding a full interface redraw.
+
+---
+
+## 9. 📇 Task Registry (Task Registry)
+
+* **Role:** Static Dictionary.
+* **Responsibilities:** Maintains the mapping between Task Names and Classes for UI configuration list generation.
+
+---
+
+## 10. 📝 Log System (Instance-Isolated Logging)
+
+* **Role:** Distributing Recorder.
+* **Strategy:**
+    1.  **Physical Isolation:** Logs are strictly written to `data/[device_id]/runtime.log`.
+    2.  **Real-time Feedback:** Pushes log text (and screenshot paths) to the UI log window via Signals.

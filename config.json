@@ -1,0 +1,7 @@
+{
+    "language": "zh_CN",
+    "close_to_tray": false,
+    "auto_connect": true,
+    "adb_path": "",
+    "use_internal_adb": true
+}
