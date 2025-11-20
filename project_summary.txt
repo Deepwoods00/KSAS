@@ -1,0 +1,5928 @@
+=== PROJECT STRUCTURE ===
+./
+    .gitignore
+    basic.py
+    config.json
+    config.py
+    datastore.py
+    instance_manager.py
+    KSAS.py
+    logging_setup.py
+    pack_project.py
+    project_summary.txt
+    scheduler.py
+    structure_en.md
+    structure_zh.md
+    task_registry.py
+    assets/
+        logo.png
+        images/
+            btn_town.png
+            home_check.png
+            island.png
+            profile_plus.png
+            heroes/
+                diana.png
+    backup/
+        backup_20251119_145751.zip
+    data/
+        device_registry.json
+        diana.txt
+        README.md
+        deepwoods/
+            config.json
+            statistics.json
+        deep_sl_002/
+            config.json
+            datastore.json
+            statistics.json
+        deep_sl_test/
+            config.json
+            statistics.json
+    i18n/
+        en.yaml
+        i18n.py
+        zh.yaml
+        __init__.py
+    tasks/
+        base_task.py
+        example_task.py
+        general_settings.py
+        verify_stamina.py
+        wolf.py
+        __init.py
+        combat/
+            beast.py
+            rally.py
+            __init__.py
+        daily/
+            chest.py
+            gather.py
+            intel.py
+            stamina_check.py
+            __init__.py
+        shop/
+            general_shop.py
+            __init__.py
+    tools/
+        adb/
+            adb.exe
+            AdbWinApi.dll
+            AdbWinUsbApi.dll
+    ui/
+        add_instance_dialog.py
+        edit_instance_dialog.py
+        main_window.ui
+        main_window.ui.backup
+        main_window_logic.py
+        settings_dialog.py
+        task_widgets.py
+        ui_main_window.py
+        __init__.py
+        generated/
+            ui_main_window.py
+            __init__.py
+
+
+=== FILE CONTENTS ===
+
+==================================================
+FILE: .\basic.py
+==================================================
+# -*- coding: utf-8 -*-
+import os
+import time
+import logging
+import random
+import threading
+import cv2
+import numpy as np
+from functools import wraps
+from datetime import datetime
+
+# Airtest 核心 API
+from airtest.core.api import (
+    connect_device, set_current, touch, swipe, text, 
+    wait, exists, sleep, snapshot, keyevent, Template
+)
+from airtest.core.error import TargetNotFoundError
+from airtest.core.helper import G
+
+# OCR 库引入
+try:
+    from paddleocr import PaddleOCR
+except ImportError:
+    PaddleOCR = None
+
+# ====================================================
+# 🔒 全局互斥锁 (Reentrant Lock)
+# ====================================================
+_ADB_LOCK = threading.RLock()
+
+# ==========================================
+# 🧠 全局共享资源 (OCR)
+# ==========================================
+class GlobalOCR:
+    _engine = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def _init_engine(cls):
+        if PaddleOCR is None:
+            return None
+        # 👇【关键修改】去掉 show_log=False，防止新版报错
+        return PaddleOCR(use_angle_cls=False, lang='ch')
+
+    @classmethod
+    def safe_ocr(cls, img_array):
+        if cls._engine is None:
+            with cls._lock:
+                if cls._engine is None:
+                    cls._engine = cls._init_engine()
+        
+        if cls._engine is None:
+            return []
+
+        with cls._lock:
+            try:
+                # 直接传图片
+                result = cls._engine.ocr(img_array)
+                return result
+            except Exception as e:
+                print(f"[GlobalOCR] 识别报错: {e}")
+                return []
+
+# ==========================================
+# 🛠️ 实例操作器
+# ==========================================
+class DeviceOperator:
+    def __init__(self, serial, instance_id, data_dir_root="data"):
+        self.serial = serial
+        self.instance_id = instance_id
+        self.logger = logging.getLogger(f"{instance_id}.Device")
+        
+        self.base_dir = os.path.join(data_dir_root, instance_id)
+        self.snapshot_dir = os.path.join(self.base_dir, "snapshots")
+        os.makedirs(self.snapshot_dir, exist_ok=True)
+
+        self._is_connected = False
+
+    # ==========================================
+    # 🛡️ 装饰器 (用于动作，返回 Bool)
+    # ==========================================
+    def _safe_wrap(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            action_name = func.__name__
+            with _ADB_LOCK:
+                self._ensure_context()
+                try:
+                    result = func(self, *args, **kwargs)
+                    return True if result is None else result
+                except TargetNotFoundError:
+                    self.logger.warning(f"[{action_name}] 未找到目标")
+                    self._save_snapshot(f"{action_name}_404")
+                    return False
+                except Exception as e:
+                    self.logger.error(f"[{action_name}] 异常: {e}")
+                    self._save_snapshot(f"{action_name}_error")
+                    return False
+        return wrapper
+
+    # ==========================================
+    # 🔌 系统连接
+    # ==========================================
+    def connect(self):
+        with _ADB_LOCK:
+            try:
+                uri = f"Android:///{self.serial}?cap_method=JAVACAP&touch_method=ADBTOUCH"
+                connect_device(uri)
+                self._is_connected = True
+                self.logger.info(f"连接成功: {self.serial}")
+                return True
+            except Exception as e:
+                self.logger.error(f"连接失败: {e}")
+                self._is_connected = False
+                return False
+
+    def _ensure_context(self):
+        if self._is_connected:
+            try:
+                set_current(self.serial)
+            except Exception:
+                pass
+
+    def _save_snapshot(self, tag):
+        try:
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"{timestamp}_{tag}.png"
+            filepath = os.path.join(self.snapshot_dir, filename)
+            snapshot(filename=filepath)
+            return filepath
+        except:
+            return None
+
+    # ==========================================
+    # 👆 动作执行 (保留装饰器)
+    # ==========================================
+    @_safe_wrap
+    def click(self, target, times=1, offset=(0, 0)):
+        for _ in range(times):
+            touch(target)
+            if times > 1:
+                sleep(random.uniform(0.2, 0.5))
+
+    @_safe_wrap
+    def swipe_screen(self, direction="up", scale=0.6, area=None):
+        if area:
+            x1, y1, x2, y2 = map(int, area)
+            w, h = x2 - x1, y2 - y1
+            base_x, base_y = x1, y1
+        else:
+            w, h = G.DEVICE.get_current_resolution()
+            base_x, base_y = 0, 0
+        cx, cy = base_x + w * 0.5, base_y + h * 0.5
+        delta_h, delta_w = h * scale * 0.5, w * scale * 0.5
+        if direction == "up":    start, end = (cx, cy + delta_h), (cx, cy - delta_h)
+        elif direction == "down": start, end = (cx, cy - delta_h), (cx, cy + delta_h)
+        elif direction == "left": start, end = (cx + delta_w, cy), (cx - delta_w, cy)
+        elif direction == "right": start, end = (cx - delta_w, cy), (cx + delta_w, cy)
+        else: return False
+        swipe(start, end)
+        sleep(0.8)
+
+    @_safe_wrap
+    def swipe_until_found(self, target, direction="up", scale=0.5, area=None, max_retry=5):
+        for i in range(max_retry):
+            time.sleep(0.5)
+            if exists(target): return True
+            self.logger.info(f"寻找目标... 滑动 #{i+1}")
+            self.swipe_screen(direction=direction, scale=scale, area=area)
+        return False
+
+    @_safe_wrap
+    def pinch(self, mode="in"):
+        from airtest.core.api import pinch as at_pinch
+        at_pinch(mode=mode, center=None)
+        sleep(1.5)
+
+    @_safe_wrap
+    def input_text(self, content, confirm=True):
+        text(str(content), enter=confirm)
+        sleep(1)
+
+    @_safe_wrap
+    def press_back(self):
+        keyevent("BACK")
+        sleep(1)
+
+    @_safe_wrap
+    def app_restart(self, package_name):
+        from airtest.core.android.android import Android
+        dev = G.DEVICE
+        if isinstance(dev, Android):
+            dev.stop_app(package_name)
+            sleep(1)
+            dev.start_app(package_name)
+            sleep(5)
+
+    @_safe_wrap
+    def exists(self, target):
+        return True if exists(target) else False
+
+    @_safe_wrap
+    def sleep(self, seconds):
+        sleep(seconds)
+
+    # ==========================================
+    # 👁️ 数据获取 (无装饰器，手动控制返回字符串)
+    # ==========================================
+    def get_text(self, area=None):
+        """OCR 识别 (手动加锁，返回字符串)"""
+        with _ADB_LOCK:
+            try:
+                self._ensure_context()
+                temp_path = os.path.join(self.snapshot_dir, "ocr_tmp.png")
+                snapshot(filename=temp_path)
+                img = cv2.imread(temp_path)
+                if img is None: return ""
+
+                if area:
+                    x1, y1, x2, y2 = map(int, area)
+                    h, w = img.shape[:2]
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w, x2), min(h, y2)
+                    img = img[y1:y2, x1:x2]
+
+                # 图像增强
+                try:
+                    height, width = img.shape[:2]
+                    scale = 3
+                    zoomed = cv2.resize(img, (width*scale, height*scale), interpolation=cv2.INTER_CUBIC)
+                    gray = cv2.cvtColor(zoomed, cv2.COLOR_BGR2GRAY)
+                    _, binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)
+                    final_img = cv2.copyMakeBorder(binary, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+                    final_img = cv2.cvtColor(final_img, cv2.COLOR_GRAY2BGR)
+                except:
+                    final_img = img
+            except Exception as e:
+                self.logger.error(f"OCR前置操作异常: {e}")
+                return ""
+
+        # OCR (自带锁，移出 ADB 锁范围)
+        res = GlobalOCR.safe_ocr(final_img)
+        if not res: return ""
+
+        try:
+            if isinstance(res[0], dict):
+                texts = res[0].get('rec_texts', [])
+                txt = "".join(texts)
+            elif isinstance(res[0], list):
+                txt = "".join([line[1][0] for line in res[0]])
+            else:
+                txt = ""
+            return txt.strip()
+        except:
+            return ""
+
+    def parse_number(self, text):
+        if not text: return 0
+        s = str(text).lower().replace(" ", "").replace(",", "")
+        multiplier = 1
+        if 'k' in s:
+            multiplier = 1000
+            s = s.replace('k', '')
+        elif 'm' in s:
+            multiplier = 1000000
+            s = s.replace('m', '')
+        try:
+            val = float(s)
+            return int(val * multiplier)
+        except:
+            return 0
+
+    # ==========================================
+    # 🏠 导航与状态 (不加装饰器，内部调用原子操作)
+    # ==========================================
+    def check_resolution(self):
+        try:
+            from airtest.core.android.adb import ADB
+            adb = ADB(self.serial)
+            output = adb.shell("wm size")
+            if not output: return False
+            import re
+            match = re.search(r"(\d+)x(\d+)", output)
+            if match:
+                w, h = int(match.group(1)), int(match.group(2))
+                if (w == 720 and h == 1280) or (w == 1280 and h == 720): return True
+            return False
+        except:
+            return False
+
+    def ensure_home(self):
+        img_home = Template(r"assets/images/home_check.png")
+        img_island = Template(r"assets/images/island.png")
+        img_town_btn = Template(r"assets/images/btn_town.png")
+        
+        if self.exists(img_home): return True
+        if self.exists(img_island):
+            self.click(img_town_btn)
+            if self.exists(img_home): return True
+        if self.exists(img_town_btn):
+            self.click(img_town_btn)
+            if self.exists(img_home): return True
+        
+        self.logger.warning("尝试暴力复位...")
+        for _ in range(3):
+            self.press_back()
+            if self.exists(img_home): return True
+        return False
+
+==================================================
+FILE: .\config.json
+==================================================
+{
+    "language": "zh_CN",
+    "close_to_tray": false,
+    "auto_connect": true,
+    "adb_path": "",
+    "use_internal_adb": true
+}
+
+==================================================
+FILE: .\config.py
+==================================================
+# -*- coding: utf-8 -*-
+import os
+import json
+import logging
+
+class GlobalConfig:
+    _instance = None
+    
+    DEFAULT_CONFIG = {
+        "language": "zh_CN",
+        "close_to_tray": False,   # 默认关闭：点击关闭按钮直接退出
+        "auto_connect": True,    # 启动时自动连接
+        "adb_path": "",          # 自定义 ADB 路径
+        "use_internal_adb": True # 是否使用内置 ADB
+    }
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(GlobalConfig, cls).__new__(cls, *args, **kwargs)
+        return cls._instance
+
+    def __init__(self, config_path="config.json"):
+        if hasattr(self, "_initialized"):
+            return
+        self.config_path = config_path
+        self.config = self.DEFAULT_CONFIG.copy()
+        self.logger = logging.getLogger("GlobalConfig")
+        self.load()
+        self._initialized = True
+
+    def load(self):
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    # 合并配置，确保新字段存在
+                    for key, val in data.items():
+                        self.config[key] = val
+            except Exception as e:
+                self.logger.error(f"加载全局配置失败: {e}")
+
+    def save(self):
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"保存全局配置失败: {e}")
+
+    def get(self, key, default=None):
+        return self.config.get(key, default)
+
+    def set(self, key, value):
+        self.config[key] = value
+        self.save()
+
+# 全局单例
+global_config = GlobalConfig()
+
+
+==================================================
+FILE: .\datastore.py
+==================================================
+# -*- coding: utf-8 -*-
+import os
+import json
+import threading
+import logging
+from PySide6.QtCore import QObject, Signal
+
+class InstanceDataStore(QObject):
+    """
+    单个实例的数据管家 (Per-Instance Data Manager)
+    
+    职责：
+    1. 管理 config.json (用户配置：读多写少)
+    2. 管理 statistics.json (游戏数据：写多读少)
+    3. 维护 runtime memory (内存状态：不存盘)
+    4. 作为 UI 和 后台脚本 的通讯枢纽 (Signals)
+    """
+
+    # ==================================================
+    # 📡 信号定义 (Signals for UI)
+    # ==================================================
+    
+    # 1. 配置变更信号: (key_path, new_value)
+    # 场景：代码里重置了配置 -> UI 复选框自动更新
+    sig_config_changed = Signal(str, object)
+
+    # 2. 统计/资源数据变更信号: (key_path, new_value)
+    # 场景：脚本 OCR 读到了新体力 -> UI 进度条刷新
+    sig_stats_updated = Signal(str, object)
+
+    # 3. 运行时状态变更信号: (key, new_value)
+    # 场景：ADB 断开连接 -> UI 状态灯变红
+    sig_runtime_changed = Signal(str, object)
+
+    # 4. 日志信号: (level, message)
+    # 场景：把后台的 print/log 转发到 UI 的文本框里
+    sig_log_msg = Signal(str, str)
+
+    def __init__(self, instance_id, data_root="data"):
+        super().__init__()
+        self.instance_id = instance_id
+        
+        # --- 路径配置 ---
+        # 你的结构: data/deep_sl_002/
+        self.base_dir = os.path.join(data_root, instance_id)
+        self.config_path = os.path.join(self.base_dir, "config.json")
+        self.stats_path = os.path.join(self.base_dir, "statistics.json")
+
+        # --- 线程安全锁 ---
+        # RLock (可重入锁) 允许同一个线程多次获得锁，防止死锁
+        self._lock = threading.RLock()
+
+        # --- 内存数据容器 ---
+        self._config = {}   # 对应 config.json
+        self._stats = {}    # 对应 statistics.json
+        self._runtime = {   # 纯内存状态 (关机即焚)
+            "is_running": False,       # 调度器运行状态
+            "connect_status": "OFFLINE", # ADB 连接状态
+            "current_task": "Idle"     # 当前正在执行的任务名
+        }
+
+        # --- 初始化 ---
+        self._ensure_dirs()
+        self.load_all()
+
+    def _ensure_dirs(self):
+        """确保专属文件夹及子文件夹结构完整"""
+        # 1. 创建实例主目录 (data/deep_sl_002)
+        if not os.path.exists(self.base_dir):
+            os.makedirs(self.base_dir, exist_ok=True)
+            
+        # 2. 创建日志目录 (data/deep_sl_002/log)
+        log_dir = os.path.join(self.base_dir, "log")
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+
+        # 3. 创建截图目录 (data/deep_sl_002/snapshots)
+        snap_dir = os.path.join(self.base_dir, "snapshots")
+        if not os.path.exists(snap_dir):
+            os.makedirs(snap_dir, exist_ok=True)
+
+    def load_all(self):
+        """加载所有持久化数据"""
+        # 1. 加载配置 (带默认值)
+        default_config = {
+            "instance_name": self.instance_id,
+            "adb_device_id": "",
+            "modules": {
+                "general": {
+                    "auto_restart": True,
+                    "total_march_slots": 4,
+                    "diana_level": 5 
+                }
+        }
+        self._load_json(self.config_path, self._config, default_config)
+
+        # 2. 加载统计 (默认为空)
+        default_stats = {
+            "stamina": 0,
+            "resources": {
+                "food": 0,
+                "wood": 0,
+                "stone": 0,
+                "iron": 0
+            }
+        }
+        self._load_json(self.stats_path, self._stats, default_stats)
+
+    def _load_json(self, path, container, default):
+        """通用的安全读取逻辑 (带简单的二级补全)"""
+        with self._lock:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        saved_data = json.load(f)
+                        
+                        # 1. 先把默认值深拷贝进来
+                        # (这样能保证拥有最全的字段结构)
+                        import copy
+                        merged_data = copy.deepcopy(default)
+                        
+                        # 2. 递归更新 (这里只做两层简单的合并，够用了)
+                        for key, val in saved_data.items():
+                            if isinstance(val, dict) and key in merged_data and isinstance(merged_data[key], dict):
+                                # 如果是字典（比如 modules），进去更新里面的字段
+                                merged_data[key].update(val)
+                            else:
+                                # 如果是普通值，直接覆盖
+                                merged_data[key] = val
+                        
+                        # 3. 更新到内存容器
+                        container.clear()
+                        container.update(merged_data)
+                        
+                except Exception as e:
+                    self.push_log(f"文件 {os.path.basename(path)} 损坏/解析失败: {e}", "ERROR")
+                    # 损坏了就用默认值
+                    container.clear()
+                    container.update(default)
+                    self._save_json(path, container)
+            else:
+                # 文件不存在，初始化为默认值
+                container.update(default)
+                self._save_json(path, container)
+
+    def _save_json(self, path, container):
+        """通用的安全保存逻辑"""
+        with self._lock:
+            try:
+                # 临时写入再重命名，防止写入一半断电导致文件损坏 (Atomic Write 思想)
+                temp_path = path + ".tmp"
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(container, f, indent=4, ensure_ascii=False)
+                
+                if os.path.exists(path):
+                    os.remove(path)
+                os.rename(temp_path, path)
+            except Exception as e:
+                self.push_log(f"保存 {os.path.basename(path)} 失败: {e}", "ERROR")
+
+    def save_config(self):
+        """手动触发保存配置"""
+        self._save_json(self.config_path, self._config)
+
+    def save_stats(self):
+        """手动触发保存统计"""
+        self._save_json(self.stats_path, self._stats)
+
+    # ==================================================
+    # 🔧 数据操作接口 (Getters & Setters)
+    # ==================================================
+
+    # --- 1. 用户配置 (Config) ---
+    
+    def get_cfg(self, key_path, default=None):
+        """
+        读取配置
+        用法: get_cfg("modules.hunting.enable")
+        """
+        return self._get_value_by_path(self._config, key_path, default)
+
+    def set_cfg(self, key_path, value):
+        """
+        修改配置 -> 立即保存 -> 通知 UI
+        用法: set_cfg("modules.hunting.enable", True)
+        """
+        # 如果值确实改变了
+        if self._set_value_by_path(self._config, key_path, value):
+            self.save_config() # 持久化
+            self.sig_config_changed.emit(key_path, value) # 通知 UI
+
+    # --- 2. 游戏数据 (Statistics) ---
+    
+    def get_stat(self, key_path, default=0):
+        """
+        读取游戏统计
+        用法: get_stat("resources.wood")
+        """
+        return self._get_value_by_path(self._stats, key_path, default)
+
+    def set_stat(self, key_path, value):
+        """
+        修改游戏数据 -> 立即保存 -> 通知 UI
+        用法: set_stat("stamina", 80)
+        """
+        if self._set_value_by_path(self._stats, key_path, value):
+            self.save_stats() # 持久化
+            self.sig_stats_updated.emit(key_path, value) # 通知 UI
+
+    # --- 3. 运行时状态 (Runtime Memory) ---
+
+    def get_runtime(self, key, default=None):
+        """读取内存状态"""
+        with self._lock:
+            return self._runtime.get(key, default)
+
+    def set_runtime(self, key, value):
+        """
+        修改运行时状态 -> 仅内存 -> 通知 UI
+        用法: set_runtime("connect_status", "ONLINE")
+        """
+        with self._lock:
+            if self._runtime.get(key) != value:
+                self._runtime[key] = value
+                self.sig_runtime_changed.emit(key, value) # 通知 UI
+
+    # ==================================================
+    # 🔨 辅助工具 (Helpers)
+    # ==================================================
+
+    def push_log(self, message, level="INFO"):
+        """
+        发送日志信号 (给 UI 显示用)
+        并不负责写 log 文件 (写文件由 logging 模块在别处处理)
+        """
+        self.sig_log_msg.emit(level, message)
+
+    def _get_value_by_path(self, root_dict, path, default):
+        """
+        [内部工具] 解析点号路径: 'a.b.c' -> dict['a']['b']['c']
+        """
+        keys = path.split('.')
+        data = root_dict
+        with self._lock:
+            try:
+                for k in keys:
+                    data = data[k]
+                return data
+            except (KeyError, TypeError):
+                return default
+
+    def _set_value_by_path(self, root_dict, path, value):
+        """
+        [内部工具] 设置点号路径: 'a.b.c' = value
+        返回 True 表示值发生了变化 (需要保存/刷新)
+        返回 False 表示值没变 (节省 IO)
+        """
+        keys = path.split('.')
+        data = root_dict
+        with self._lock:
+            try:
+                # 递归找到倒数第二层
+                for k in keys[:-1]:
+                    # 如果中间层不存在，自动创建空字典
+                    data = data.setdefault(k, {})
+                
+                last_key = keys[-1]
+                old_value = data.get(last_key)
+                
+                if old_value != value:
+                    data[last_key] = value
+                    return True # 变了
+                return False # 没变
+            except Exception as e:
+                print(f"设置键值失败 {path}: {e}")
+                return False
+
+# 文件结束
+
+==================================================
+FILE: .\instance_manager.py
+==================================================
+# -*- coding: utf-8 -*-
+# instance_manager.py
+import os
+import json
+import logging
+import re
+import time
+from datetime import datetime
+from PySide6.QtCore import QObject, Signal
+
+# 引入 DataStore
+from datastore import InstanceDataStore
+# 引入 ADB
+from airtest.core.android.adb import ADB
+# 引入 Scheduler 和 任务列表
+from scheduler import InstanceScheduler
+from task_registry import get_all_tasks
+# 引入 DeviceOperator
+from basic import DeviceOperator
+
+class InstanceManager(QObject):
+    """
+    实例管理器
+    """
+    sig_instance_list_changed = Signal()
+
+    def __init__(self, data_root="data"):
+        super().__init__()
+        self.data_root = data_root
+        self.registry_path = os.path.join(data_root, "device_registry.json")
+        self.logger = logging.getLogger("InstanceManager")
+
+        # 核心容器
+        self.data_stores = {} 
+        self.schedulers = {}  # <--- 【关键修复】这里必须初始化！
+        
+        self._registry = {}
+
+        # 初始化
+        self._load_registry()
+        self._init_all_instances()
+
+    # ===========================================
+    # 📂 初始化与加载
+    # ===========================================
+    def _load_registry(self):
+        if os.path.exists(self.registry_path):
+            try:
+                with open(self.registry_path, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:
+                        self._registry = json.loads(content)
+                    else:
+                        self._registry = {}
+            except Exception as e:
+                self.logger.error(f"注册表损坏: {e}")
+                self._registry = {}
+        else:
+            self._registry = {}
+
+    def _save_registry(self):
+        try:
+            with open(self.registry_path, 'w', encoding='utf-8') as f:
+                json.dump(self._registry, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"保存注册表失败: {e}")
+
+    def _init_all_instances(self):
+        """启动时加载所有已注册账号"""
+        task_classes = get_all_tasks()
+
+        for instance_id, info in self._registry.items():
+            self.logger.info(f"正在加载实例: {info.get('display_name')} ({instance_id})")
+            
+            # 1. 加载 DataStore
+            store = InstanceDataStore(instance_id, self.data_root)
+            self.data_stores[instance_id] = store
+            
+            # 2. 加载 Scheduler
+            try:
+                device = DeviceOperator(info['serial'], instance_id)
+                if device.connect():
+                    self.logger.info(f"实例 {instance_id} 设备连接成功")
+                else:
+                    self.logger.warning(f"实例 {instance_id} 设备连接失败")
+                sched = InstanceScheduler(instance_id, device, store, task_classes)
+                self.schedulers[instance_id] = sched
+            except Exception as e:
+                self.logger.error(f"加载调度器失败 {instance_id}: {e}")
+
+    # ===========================================
+    # 🆕 核心创建逻辑 (修复版)
+    # ===========================================
+    def create_instance(self, display_name, serial):
+        safe_name = re.sub(r'[^a-zA-Z0-9]', '_', display_name).lower()
+        instance_id = safe_name
+        counter = 1
+        while instance_id in self._registry:
+            instance_id = f"{safe_name}_{counter}"
+            counter += 1
+
+        try:
+            # 1. 写入注册表
+            self._registry[instance_id] = {
+                "display_name": display_name,
+                "serial": serial,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            self._save_registry()
+
+            # 2. 创建 DataStore
+            new_store = InstanceDataStore(instance_id, self.data_root)
+            new_store.set_cfg("meta.serial", serial)
+            new_store.set_cfg("meta.alias", display_name)
+            self.data_stores[instance_id] = new_store
+
+            # 3. 创建 Scheduler
+            device = DeviceOperator(serial, instance_id)
+            if device.connect():
+                self.logger.info(f"新实例 {instance_id} 设备连接成功")
+            else:
+                self.logger.warning(f"新实例 {instance_id} 设备连接失败")
+            task_classes = get_all_tasks()
+            
+            sched = InstanceScheduler(instance_id, device, new_store, task_classes)
+            self.schedulers[instance_id] = sched  # <--- 这里现在安全了
+
+            self.logger.info(f"新实例创建成功: {display_name}")
+            self.sig_instance_list_changed.emit()
+            return True, instance_id
+
+        except Exception as e:
+            self.logger.error(f"创建实例失败: {e}")
+            if instance_id in self._registry:
+                del self._registry[instance_id]
+            return False, str(e)
+
+    # ===========================================
+    # 其他辅助方法
+    # ===========================================
+    def delete_instance(self, instance_id):
+        if instance_id not in self._registry:
+            return
+        
+        # 停止并删除 Scheduler
+        if instance_id in self.schedulers:
+            self.schedulers[instance_id].stop_scheduler()
+            del self.schedulers[instance_id]
+
+        if instance_id in self.data_stores:
+            del self.data_stores[instance_id]
+
+        del self._registry[instance_id]
+        self._save_registry()
+        self.sig_instance_list_changed.emit()
+
+    def update_instance(self, instance_id, new_serial=None, new_alias=None):
+        """
+        更新实例信息 (修改 Serial 或 别名)
+        """
+        if instance_id not in self._registry:
+            return False
+
+        # 1. 更新注册表
+        if new_serial:
+            self._registry[instance_id]['serial'] = new_serial
+        if new_alias:
+            self._registry[instance_id]['display_name'] = new_alias
+        
+        self._save_registry()
+
+        # 2. 更新 DataStore 里的 config.json
+        store = self.data_stores.get(instance_id)
+        if store:
+            if new_serial:
+                store.set_cfg("meta.serial", new_serial)
+            if new_alias:
+                store.set_cfg("meta.alias", new_alias)
+                
+            # 如果修改了 Serial，对应的 DeviceOperator 也需要更新 Serial
+            # 但为了简单，建议修改后提示用户重启程序，或者重新加载 Scheduler
+        
+        # 3. 发信号通知 UI 刷新列表
+        self.sig_instance_list_changed.emit()
+        return True
+
+    def get_all_instances(self):
+        result = []
+        for iid, info in self._registry.items():
+            store = self.data_stores.get(iid)
+            status = store.get_runtime("connect_status", "OFFLINE") if store else "ERROR"
+            result.append({
+                "id": iid,
+                "name": info["display_name"],
+                "serial": info["serial"],
+                "status": status
+            })
+        return result
+
+    def get_store(self, instance_id):
+        return self.data_stores.get(instance_id)
+    
+    def get_scheduler(self, instance_id):
+        return self.schedulers.get(instance_id)
+
+    # 手动添加入口
+    def add_instance_by_ip(self, display_name, ip_address):
+        # ... (保持之前的代码，此处省略以节省篇幅) ...
+        pass
+
+==================================================
+FILE: .\KSAS.py
+==================================================
+# -*- coding: utf-8 -*-
+import sys
+import os
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["MKL_NUM_THREADS"] = "2"
+os.environ["PADDLE_NUM_THREADS"] = "2"
+os.environ["OPENCV_NUM_THREADS"] = "2"
+import logging
+from PySide6.QtWidgets import QApplication
+from ui.main_window_logic import MainWindowLogic
+
+# =========== 👇 引入配置和 Airtest ADB 类 👇 ===========
+from config import global_config
+from airtest.core.android.adb import ADB
+
+# 用于存储我们要强制使用的路径
+_TARGET_ADB_PATH = None
+
+def setup_global_adb():
+    """
+    使用 Monkey Patch (移花接木) 技术，强制替换 Airtest 的 ADB 路径
+    """
+    global _TARGET_ADB_PATH
+    
+    # 1. 读取配置，找到真正的 adb.exe
+    use_internal = global_config.get("use_internal_adb", True)
+    custom_path = global_config.get("adb_path", "")
+    
+    if use_internal:
+        internal_path = os.path.join(os.getcwd(), "tools", "adb", "adb.exe")
+        if os.path.exists(internal_path):
+            _TARGET_ADB_PATH = internal_path
+    else:
+        if custom_path and os.path.exists(custom_path):
+            _TARGET_ADB_PATH = custom_path
+            
+    if not _TARGET_ADB_PATH:
+        print("⚠️ [System] 未找到指定 ADB，将使用系统默认")
+        return
+
+    print(f"✅ [System] 全局 ADB 路径已锁定: {_TARGET_ADB_PATH}")
+
+    # 2. 【黑魔法】保存原版的构造函数
+    _original_init = ADB.__init__
+
+    # 3. 【黑魔法】定义一个新的构造函数
+    def _patched_init(self, serialno=None, adb_path=None, server_addr=None, **kwargs):
+        # 关键点：如果调用时没指定 path，或者指定的是默认的，我们强行替换成我们的
+        if not adb_path:
+            adb_path = _TARGET_ADB_PATH
+            
+        # 调用原版逻辑，但传入了我们的 path
+        _original_init(self, serialno=serialno, adb_path=adb_path, server_addr=server_addr, **kwargs)
+
+    # 4. 【黑魔法】把 Airtest 的构造函数换成我们的
+    ADB.__init__ = _patched_init
+# ======================================================
+
+# 配置日志输出格式
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [%(name)s] - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger("Main")
+
+if __name__ == "__main__":
+    # 1. 先施展魔法 (必须在其他逻辑开始前)
+    setup_global_adb()
+
+    # 2. 创建 Qt App
+    app = QApplication(sys.argv)
+    
+    # 3. 创建主窗口逻辑
+    window = MainWindowLogic()
+    window.show()
+    
+    logger.info("KSAS UI Launched.")
+    
+    # 4. 进入事件循环
+    sys.exit(app.exec())
+
+==================================================
+FILE: .\logging_setup.py
+==================================================
+# logging_setup.py
+# -*- coding: utf-8 -*-
+import logging
+import os
+
+class GuiLogHandler(logging.Handler):
+    """
+    自定义日志处理器：拦截日志并转发给 DataStore -> UI
+    """
+    def __init__(self, datastore):
+        super().__init__()
+        self.datastore = datastore
+        self.instance_id = datastore.instance_id
+        # 设置格式: 只取消息内容
+        self.setFormatter(logging.Formatter("%(message)s"))
+
+    def emit(self, record):
+        """
+        当有日志产生时触发
+        """
+        try:
+            msg = self.format(record)
+            level = record.levelname
+            # 拼装 ID，防止 UI 串台
+            full_msg = f"{self.instance_id}|||{msg}"
+            self.datastore.push_log(full_msg, level)
+        except Exception:
+            self.handleError(record)
+
+def setup_file_logging(instance_id, log_dir):
+    """
+    给指定实例挂载文件日志功能
+    :return: 创建好的 FileHandler 对象 (方便后续移除)
+    """
+    logger = logging.getLogger(instance_id)
+    logger.setLevel(logging.INFO)
+    
+    # 1. 检查是否已经有文件处理器了 (防止重复添加)
+    for h in logger.handlers:
+        if isinstance(h, logging.FileHandler):
+            return h
+
+    # 2. 确保目录存在
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+
+    # 3. 创建文件处理器
+    log_path = os.path.join(log_dir, "ksas.log")
+    # mode='a' 追加模式，encoding='utf-8' 防止中文乱码
+    file_handler = logging.FileHandler(log_path, encoding='utf-8', mode='a')
+    
+    # 4. 设置格式 (文件里需要带时间戳，方便查案)
+    formatter = logging.Formatter('%(asctime)s - [%(name)s] - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    
+    # 5. 挂载上去
+    logger.addHandler(file_handler)
+    
+    return file_handler
+
+==================================================
+FILE: .\pack_project.py
+==================================================
+import os
+
+# 设置要忽略的文件夹 (黑名单)
+IGNORE_DIRS = {
+    "venv", ".venv", "ksas_env", "__pycache__", ".git", ".idea", ".vscode", 
+    "build", "dist", "paddleocr", "snapshots", "log"
+}
+
+# 设置要读取的文件后缀 (白名单)
+INCLUDE_EXTS = {".py", ".json", ".ui", ".md", ".txt"}
+
+def pack_project():
+    output_file = "project_summary.txt"
+    
+    with open(output_file, "w", encoding="utf-8") as out:
+        # 1. 先写一个目录结构树
+        out.write("=== PROJECT STRUCTURE ===\n")
+        for root, dirs, files in os.walk("."):
+            # 过滤掉黑名单目录
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+            
+            level = root.replace(os.getcwd(), '').count(os.sep)
+            indent = ' ' * 4 * (level)
+            out.write(f"{indent}{os.path.basename(root)}/\n")
+            subindent = ' ' * 4 * (level + 1)
+            for f in files:
+                out.write(f"{subindent}{f}\n")
+        
+        out.write("\n\n=== FILE CONTENTS ===\n")
+
+        # 2. 遍历读取文件内容
+        for root, dirs, files in os.walk("."):
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+            
+            for filename in files:
+                ext = os.path.splitext(filename)[1]
+                if ext in INCLUDE_EXTS:
+                    filepath = os.path.join(root, filename)
+                    
+                    # 写入分隔符和文件名
+                    out.write(f"\n{'='*50}\n")
+                    out.write(f"FILE: {filepath}\n")
+                    out.write(f"{'='*50}\n")
+                    
+                    try:
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            content = f.read()
+                            out.write(content)
+                    except Exception as e:
+                        out.write(f"[Error reading file: {e}]")
+                    
+                    out.write("\n")
+
+    print(f"✅ 打包完成！请把生成的 '{output_file}' 发给我。")
+
+if __name__ == "__main__":
+    pack_project()
+
+==================================================
+FILE: .\project_summary.txt
+==================================================
+=== PROJECT STRUCTURE ===
+./
+    .gitignore
+    basic.py
+    config.json
+    config.py
+    datastore.py
+    instance_manager.py
+    KSAS.py
+    logging_setup.py
+    pack_project.py
+    project_summary.txt
+    scheduler.py
+    structure_en.md
+    structure_zh.md
+    task_registry.py
+    assets/
+        logo.png
+        images/
+            btn_town.png
+            home_check.png
+            island.png
+            profile_plus.png
+            heroes/
+                diana.png
+    backup/
+        backup_20251119_145751.zip
+    data/
+        device_registry.json
+        diana.txt
+        README.md
+        deepwoods/
+            config.json
+            statistics.json
+        deep_sl_002/
+            config.json
+            datastore.json
+            statistics.json
+        deep_sl_test/
+            config.json
+            statistics.json
+    i18n/
+        en.yaml
+        i18n.py
+        zh.yaml
+        __init__.py
+    tasks/
+        base_task.py
+        example_task.py
+        general_settings.py
+        verify_stamina.py
+        wolf.py
+        __init.py
+        combat/
+            beast.py
+            rally.py
+            __init__.py
+        daily/
+            chest.py
+            gather.py
+            intel.py
+            stamina_check.py
+            __init__.py
+        shop/
+            general_shop.py
+            __init__.py
+    tools/
+        adb/
+            adb.exe
+            AdbWinApi.dll
+            AdbWinUsbApi.dll
+    ui/
+        add_instance_dialog.py
+        edit_instance_dialog.py
+        main_window.ui
+        main_window.ui.backup
+        main_window_logic.py
+        settings_dialog.py
+        task_widgets.py
+        ui_main_window.py
+        __init__.py
+        generated/
+            ui_main_window.py
+            __init__.py
+
+
+=== FILE CONTENTS ===
+
+==================================================
+FILE: .\basic.py
+==================================================
+# -*- coding: utf-8 -*-
+import os
+import time
+import logging
+import random
+import threading
+import cv2
+import numpy as np
+from functools import wraps
+from datetime import datetime
+
+# Airtest 核心 API
+from airtest.core.api import (
+    connect_device, set_current, touch, swipe, text, 
+    wait, exists, sleep, snapshot, keyevent, Template
+)
+from airtest.core.error import TargetNotFoundError
+from airtest.core.helper import G
+
+# OCR 库引入
+try:
+    from paddleocr import PaddleOCR
+except ImportError:
+    PaddleOCR = None
+
+# ====================================================
+# 🔒 全局互斥锁 (Reentrant Lock)
+# ====================================================
+_ADB_LOCK = threading.RLock()
+
+# ==========================================
+# 🧠 全局共享资源 (OCR)
+# ==========================================
+class GlobalOCR:
+    _engine = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def _init_engine(cls):
+        if PaddleOCR is None:
+            return None
+        # 👇【关键修改】去掉 show_log=False，防止新版报错
+        return PaddleOCR(use_angle_cls=False, lang='ch')
+
+    @classmethod
+    def safe_ocr(cls, img_array):
+        if cls._engine is None:
+            with cls._lock:
+                if cls._engine is None:
+                    cls._engine = cls._init_engine()
+        
+        if cls._engine is None:
+            return []
+
+        with cls._lock:
+            try:
+                # 直接传图片
+                result = cls._engine.ocr(img_array)
+                return result
+            except Exception as e:
+                print(f"[GlobalOCR] 识别报错: {e}")
+                return []
+
+# ==========================================
+# 🛠️ 实例操作器
+# ==========================================
+class DeviceOperator:
+    def __init__(self, serial, instance_id, data_dir_root="data"):
+        self.serial = serial
+        self.instance_id = instance_id
+        self.logger = logging.getLogger(f"{instance_id}.Device")
+        
+        self.base_dir = os.path.join(data_dir_root, instance_id)
+        self.snapshot_dir = os.path.join(self.base_dir, "snapshots")
+        os.makedirs(self.snapshot_dir, exist_ok=True)
+
+        self._is_connected = False
+
+    # ==========================================
+    # 🛡️ 装饰器 (用于动作，返回 Bool)
+    # ==========================================
+    def _safe_wrap(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            action_name = func.__name__
+            with _ADB_LOCK:
+                self._ensure_context()
+                try:
+                    result = func(self, *args, **kwargs)
+                    return True if result is None else result
+                except TargetNotFoundError:
+                    self.logger.warning(f"[{action_name}] 未找到目标")
+                    self._save_snapshot(f"{action_name}_404")
+                    return False
+                except Exception as e:
+                    self.logger.error(f"[{action_name}] 异常: {e}")
+                    self._save_snapshot(f"{action_name}_error")
+                    return False
+        return wrapper
+
+    # ==========================================
+    # 🔌 系统连接
+    # ==========================================
+    def connect(self):
+        with _ADB_LOCK:
+            try:
+                uri = f"Android:///{self.serial}?cap_method=JAVACAP&touch_method=ADBTOUCH"
+                connect_device(uri)
+                self._is_connected = True
+                self.logger.info(f"连接成功: {self.serial}")
+                return True
+            except Exception as e:
+                self.logger.error(f"连接失败: {e}")
+                self._is_connected = False
+                return False
+
+    def _ensure_context(self):
+        if self._is_connected:
+            try:
+                set_current(self.serial)
+            except Exception:
+                pass
+
+    def _save_snapshot(self, tag):
+        try:
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"{timestamp}_{tag}.png"
+            filepath = os.path.join(self.snapshot_dir, filename)
+            snapshot(filename=filepath)
+            return filepath
+        except:
+            return None
+
+    # ==========================================
+    # 👆 动作执行 (保留装饰器)
+    # ==========================================
+    @_safe_wrap
+    def click(self, target, times=1, offset=(0, 0)):
+        for _ in range(times):
+            touch(target)
+            if times > 1:
+                sleep(random.uniform(0.2, 0.5))
+
+    @_safe_wrap
+    def swipe_screen(self, direction="up", scale=0.6, area=None):
+        if area:
+            x1, y1, x2, y2 = map(int, area)
+            w, h = x2 - x1, y2 - y1
+            base_x, base_y = x1, y1
+        else:
+            w, h = G.DEVICE.get_current_resolution()
+            base_x, base_y = 0, 0
+        cx, cy = base_x + w * 0.5, base_y + h * 0.5
+        delta_h, delta_w = h * scale * 0.5, w * scale * 0.5
+        if direction == "up":    start, end = (cx, cy + delta_h), (cx, cy - delta_h)
+        elif direction == "down": start, end = (cx, cy - delta_h), (cx, cy + delta_h)
+        elif direction == "left": start, end = (cx + delta_w, cy), (cx - delta_w, cy)
+        elif direction == "right": start, end = (cx - delta_w, cy), (cx + delta_w, cy)
+        else: return False
+        swipe(start, end)
+        sleep(0.8)
+
+    @_safe_wrap
+    def swipe_until_found(self, target, direction="up", scale=0.5, area=None, max_retry=5):
+        for i in range(max_retry):
+            time.sleep(0.5)
+            if exists(target): return True
+            self.logger.info(f"寻找目标... 滑动 #{i+1}")
+            self.swipe_screen(direction=direction, scale=scale, area=area)
+        return False
+
+    @_safe_wrap
+    def pinch(self, mode="in"):
+        from airtest.core.api import pinch as at_pinch
+        at_pinch(mode=mode, center=None)
+        sleep(1.5)
+
+    @_safe_wrap
+    def input_text(self, content, confirm=True):
+        text(str(content), enter=confirm)
+        sleep(1)
+
+    @_safe_wrap
+    def press_back(self):
+        keyevent("BACK")
+        sleep(1)
+
+    @_safe_wrap
+    def app_restart(self, package_name):
+        from airtest.core.android.android import Android
+        dev = G.DEVICE
+        if isinstance(dev, Android):
+            dev.stop_app(package_name)
+            sleep(1)
+            dev.start_app(package_name)
+            sleep(5)
+
+    @_safe_wrap
+    def exists(self, target):
+        return True if exists(target) else False
+
+    @_safe_wrap
+    def sleep(self, seconds):
+        sleep(seconds)
+
+    # ==========================================
+    # 👁️ 数据获取 (无装饰器，手动控制返回字符串)
+    # ==========================================
+    def get_text(self, area=None):
+        """OCR 识别 (手动加锁，返回字符串)"""
+        with _ADB_LOCK:
+            try:
+                self._ensure_context()
+                temp_path = os.path.join(self.snapshot_dir, "ocr_tmp.png")
+                snapshot(filename=temp_path)
+                img = cv2.imread(temp_path)
+                if img is None: return ""
+
+                if area:
+                    x1, y1, x2, y2 = map(int, area)
+                    h, w = img.shape[:2]
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w, x2), min(h, y2)
+                    img = img[y1:y2, x1:x2]
+
+                # 图像增强
+                try:
+                    height, width = img.shape[:2]
+                    scale = 3
+                    zoomed = cv2.resize(img, (width*scale, height*scale), interpolation=cv2.INTER_CUBIC)
+                    gray = cv2.cvtColor(zoomed, cv2.COLOR_BGR2GRAY)
+                    _, binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)
+                    final_img = cv2.copyMakeBorder(binary, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+                    final_img = cv2.cvtColor(final_img, cv2.COLOR_GRAY2BGR)
+                except:
+                    final_img = img
+            except Exception as e:
+                self.logger.error(f"OCR前置操作异常: {e}")
+                return ""
+
+        # OCR (自带锁，移出 ADB 锁范围)
+        res = GlobalOCR.safe_ocr(final_img)
+        if not res: return ""
+
+        try:
+            if isinstance(res[0], dict):
+                texts = res[0].get('rec_texts', [])
+                txt = "".join(texts)
+            elif isinstance(res[0], list):
+                txt = "".join([line[1][0] for line in res[0]])
+            else:
+                txt = ""
+            return txt.strip()
+        except:
+            return ""
+
+    def parse_number(self, text):
+        if not text: return 0
+        s = str(text).lower().replace(" ", "").replace(",", "")
+        multiplier = 1
+        if 'k' in s:
+            multiplier = 1000
+            s = s.replace('k', '')
+        elif 'm' in s:
+            multiplier = 1000000
+            s = s.replace('m', '')
+        try:
+            val = float(s)
+            return int(val * multiplier)
+        except:
+            return 0
+
+    # ==========================================
+    # 🏠 导航与状态 (不加装饰器，内部调用原子操作)
+    # ==========================================
+    def check_resolution(self):
+        try:
+            from airtest.core.android.adb import ADB
+            adb = ADB(self.serial)
+            output = adb.shell("wm size")
+            if not output: return False
+            import re
+            match = re.search(r"(\d+)x(\d+)", output)
+            if match:
+                w, h = int(match.group(1)), int(match.group(2))
+                if (w == 720 and h == 1280) or (w == 1280 and h == 720): return True
+            return False
+        except:
+            return False
+
+    def ensure_home(self):
+        img_home = Template(r"assets/images/home_check.png")
+        img_island = Template(r"assets/images/island.png")
+        img_town_btn = Template(r"assets/images/btn_town.png")
+        
+        if self.exists(img_home): return True
+        if self.exists(img_island):
+            self.click(img_town_btn)
+            if self.exists(img_home): return True
+        if self.exists(img_town_btn):
+            self.click(img_town_btn)
+            if self.exists(img_home): return True
+        
+        self.logger.warning("尝试暴力复位...")
+        for _ in range(3):
+            self.press_back()
+            if self.exists(img_home): return True
+        return False
+
+==================================================
+FILE: .\config.json
+==================================================
+{
+    "language": "zh_CN",
+    "close_to_tray": false,
+    "auto_connect": true,
+    "adb_path": "",
+    "use_internal_adb": true
+}
+
+==================================================
+FILE: .\config.py
+==================================================
+# -*- coding: utf-8 -*-
+import os
+import json
+import logging
+
+class GlobalConfig:
+    _instance = None
+    
+    DEFAULT_CONFIG = {
+        "language": "zh_CN",
+        "close_to_tray": False,   # 默认关闭：点击关闭按钮直接退出
+        "auto_connect": True,    # 启动时自动连接
+        "adb_path": "",          # 自定义 ADB 路径
+        "use_internal_adb": True # 是否使用内置 ADB
+    }
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(GlobalConfig, cls).__new__(cls, *args, **kwargs)
+        return cls._instance
+
+    def __init__(self, config_path="config.json"):
+        if hasattr(self, "_initialized"):
+            return
+        self.config_path = config_path
+        self.config = self.DEFAULT_CONFIG.copy()
+        self.logger = logging.getLogger("GlobalConfig")
+        self.load()
+        self._initialized = True
+
+    def load(self):
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    # 合并配置，确保新字段存在
+                    for key, val in data.items():
+                        self.config[key] = val
+            except Exception as e:
+                self.logger.error(f"加载全局配置失败: {e}")
+
+    def save(self):
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"保存全局配置失败: {e}")
+
+    def get(self, key, default=None):
+        return self.config.get(key, default)
+
+    def set(self, key, value):
+        self.config[key] = value
+        self.save()
+
+# 全局单例
+global_config = GlobalConfig()
+
+
+==================================================
+FILE: .\datastore.py
+==================================================
+# -*- coding: utf-8 -*-
+import os
+import json
+import threading
+import logging
+from PySide6.QtCore import QObject, Signal
+
+class InstanceDataStore(QObject):
+    """
+    单个实例的数据管家 (Per-Instance Data Manager)
+    
+    职责：
+    1. 管理 config.json (用户配置：读多写少)
+    2. 管理 statistics.json (游戏数据：写多读少)
+    3. 维护 runtime memory (内存状态：不存盘)
+    4. 作为 UI 和 后台脚本 的通讯枢纽 (Signals)
+    """
+
+    # ==================================================
+    # 📡 信号定义 (Signals for UI)
+    # ==================================================
+    
+    # 1. 配置变更信号: (key_path, new_value)
+    # 场景：代码里重置了配置 -> UI 复选框自动更新
+    sig_config_changed = Signal(str, object)
+
+    # 2. 统计/资源数据变更信号: (key_path, new_value)
+    # 场景：脚本 OCR 读到了新体力 -> UI 进度条刷新
+    sig_stats_updated = Signal(str, object)
+
+    # 3. 运行时状态变更信号: (key, new_value)
+    # 场景：ADB 断开连接 -> UI 状态灯变红
+    sig_runtime_changed = Signal(str, object)
+
+    # 4. 日志信号: (level, message)
+    # 场景：把后台的 print/log 转发到 UI 的文本框里
+    sig_log_msg = Signal(str, str)
+
+    def __init__(self, instance_id, data_root="data"):
+        super().__init__()
+        self.instance_id = instance_id
+        
+        # --- 路径配置 ---
+        # 你的结构: data/deep_sl_002/
+        self.base_dir = os.path.join(data_root, instance_id)
+        self.config_path = os.path.join(self.base_dir, "config.json")
+        self.stats_path = os.path.join(self.base_dir, "statistics.json")
+
+        # --- 线程安全锁 ---
+        # RLock (可重入锁) 允许同一个线程多次获得锁，防止死锁
+        self._lock = threading.RLock()
+
+        # --- 内存数据容器 ---
+        self._config = {}   # 对应 config.json
+        self._stats = {}    # 对应 statistics.json
+        self._runtime = {   # 纯内存状态 (关机即焚)
+            "is_running": False,       # 调度器运行状态
+            "connect_status": "OFFLINE", # ADB 连接状态
+            "current_task": "Idle"     # 当前正在执行的任务名
+        }
+
+        # --- 初始化 ---
+        self._ensure_dirs()
+        self.load_all()
+
+    def _ensure_dirs(self):
+        """确保专属文件夹及子文件夹结构完整"""
+        # 1. 创建实例主目录 (data/deep_sl_002)
+        if not os.path.exists(self.base_dir):
+            os.makedirs(self.base_dir, exist_ok=True)
+            
+        # 2. 创建日志目录 (data/deep_sl_002/log)
+        log_dir = os.path.join(self.base_dir, "log")
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+
+        # 3. 创建截图目录 (data/deep_sl_002/snapshots)
+        snap_dir = os.path.join(self.base_dir, "snapshots")
+        if not os.path.exists(snap_dir):
+            os.makedirs(snap_dir, exist_ok=True)
+
+    def load_all(self):
+        """加载所有持久化数据"""
+        # 1. 加载配置 (带默认值)
+        default_config = {
+            "instance_name": self.instance_id,
+            "adb_device_id": "",
+            "modules": {
+                "general": {
+                    "auto_restart": True,
+                    "total_march_slots": 4,
+                    "diana_level": 5 
+                }
+        }
+        self._load_json(self.config_path, self._config, default_config)
+
+        # 2. 加载统计 (默认为空)
+        default_stats = {
+            "stamina": 0,
+            "resources": {
+                "food": 0,
+                "wood": 0,
+                "stone": 0,
+                "iron": 0
+            }
+        }
+        self._load_json(self.stats_path, self._stats, default_stats)
+
+    def _load_json(self, path, container, default):
+        """通用的安全读取逻辑 (带简单的二级补全)"""
+        with self._lock:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        saved_data = json.load(f)
+                        
+                        # 1. 先把默认值深拷贝进来
+                        # (这样能保证拥有最全的字段结构)
+                        import copy
+                        merged_data = copy.deepcopy(default)
+                        
+                        # 2. 递归更新 (这里只做两层简单的合并，够用了)
+                        for key, val in saved_data.items():
+                            if isinstance(val, dict) and key in merged_data and isinstance(merged_data[key], dict):
+                                # 如果是字典（比如 modules），进去更新里面的字段
+                                merged_data[key].update(val)
+                            else:
+                                # 如果是普通值，直接覆盖
+                                merged_data[key] = val
+                        
+                        # 3. 更新到内存容器
+                        container.clear()
+                        container.update(merged_data)
+                        
+                except Exception as e:
+                    self.push_log(f"文件 {os.path.basename(path)} 损坏/解析失败: {e}", "ERROR")
+                    # 损坏了就用默认值
+                    container.clear()
+                    container.update(default)
+                    self._save_json(path, container)
+            else:
+                # 文件不存在，初始化为默认值
+                container.update(default)
+                self._save_json(path, container)
+
+    def _save_json(self, path, container):
+        """通用的安全保存逻辑"""
+        with self._lock:
+            try:
+                # 临时写入再重命名，防止写入一半断电导致文件损坏 (Atomic Write 思想)
+                temp_path = path + ".tmp"
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(container, f, indent=4, ensure_ascii=False)
+                
+                if os.path.exists(path):
+                    os.remove(path)
+                os.rename(temp_path, path)
+            except Exception as e:
+                self.push_log(f"保存 {os.path.basename(path)} 失败: {e}", "ERROR")
+
+    def save_config(self):
+        """手动触发保存配置"""
+        self._save_json(self.config_path, self._config)
+
+    def save_stats(self):
+        """手动触发保存统计"""
+        self._save_json(self.stats_path, self._stats)
+
+    # ==================================================
+    # 🔧 数据操作接口 (Getters & Setters)
+    # ==================================================
+
+    # --- 1. 用户配置 (Config) ---
+    
+    def get_cfg(self, key_path, default=None):
+        """
+        读取配置
+        用法: get_cfg("modules.hunting.enable")
+        """
+        return self._get_value_by_path(self._config, key_path, default)
+
+    def set_cfg(self, key_path, value):
+        """
+        修改配置 -> 立即保存 -> 通知 UI
+        用法: set_cfg("modules.hunting.enable", True)
+        """
+        # 如果值确实改变了
+        if self._set_value_by_path(self._config, key_path, value):
+            self.save_config() # 持久化
+            self.sig_config_changed.emit(key_path, value) # 通知 UI
+
+    # --- 2. 游戏数据 (Statistics) ---
+    
+    def get_stat(self, key_path, default=0):
+        """
+        读取游戏统计
+        用法: get_stat("resources.wood")
+        """
+        return self._get_value_by_path(self._stats, key_path, default)
+
+    def set_stat(self, key_path, value):
+        """
+        修改游戏数据 -> 立即保存 -> 通知 UI
+        用法: set_stat("stamina", 80)
+        """
+        if self._set_value_by_path(self._stats, key_path, value):
+            self.save_stats() # 持久化
+            self.sig_stats_updated.emit(key_path, value) # 通知 UI
+
+    # --- 3. 运行时状态 (Runtime Memory) ---
+
+    def get_runtime(self, key, default=None):
+        """读取内存状态"""
+        with self._lock:
+            return self._runtime.get(key, default)
+
+    def set_runtime(self, key, value):
+        """
+        修改运行时状态 -> 仅内存 -> 通知 UI
+        用法: set_runtime("connect_status", "ONLINE")
+        """
+        with self._lock:
+            if self._runtime.get(key) != value:
+                self._runtime[key] = value
+                self.sig_runtime_changed.emit(key, value) # 通知 UI
+
+    # ==================================================
+    # 🔨 辅助工具 (Helpers)
+    # ==================================================
+
+    def push_log(self, message, level="INFO"):
+        """
+        发送日志信号 (给 UI 显示用)
+        并不负责写 log 文件 (写文件由 logging 模块在别处处理)
+        """
+        self.sig_log_msg.emit(level, message)
+
+    def _get_value_by_path(self, root_dict, path, default):
+        """
+        [内部工具] 解析点号路径: 'a.b.c' -> dict['a']['b']['c']
+        """
+        keys = path.split('.')
+        data = root_dict
+        with self._lock:
+            try:
+                for k in keys:
+                    data = data[k]
+                return data
+            except (KeyError, TypeError):
+                return default
+
+    def _set_value_by_path(self, root_dict, path, value):
+        """
+        [内部工具] 设置点号路径: 'a.b.c' = value
+        返回 True 表示值发生了变化 (需要保存/刷新)
+        返回 False 表示值没变 (节省 IO)
+        """
+        keys = path.split('.')
+        data = root_dict
+        with self._lock:
+            try:
+                # 递归找到倒数第二层
+                for k in keys[:-1]:
+                    # 如果中间层不存在，自动创建空字典
+                    data = data.setdefault(k, {})
+                
+                last_key = keys[-1]
+                old_value = data.get(last_key)
+                
+                if old_value != value:
+                    data[last_key] = value
+                    return True # 变了
+                return False # 没变
+            except Exception as e:
+                print(f"设置键值失败 {path}: {e}")
+                return False
+
+# 文件结束
+
+==================================================
+FILE: .\instance_manager.py
+==================================================
+# -*- coding: utf-8 -*-
+# instance_manager.py
+import os
+import json
+import logging
+import re
+import time
+from datetime import datetime
+from PySide6.QtCore import QObject, Signal
+
+# 引入 DataStore
+from datastore import InstanceDataStore
+# 引入 ADB
+from airtest.core.android.adb import ADB
+# 引入 Scheduler 和 任务列表
+from scheduler import InstanceScheduler
+from task_registry import get_all_tasks
+# 引入 DeviceOperator
+from basic import DeviceOperator
+
+class InstanceManager(QObject):
+    """
+    实例管理器
+    """
+    sig_instance_list_changed = Signal()
+
+    def __init__(self, data_root="data"):
+        super().__init__()
+        self.data_root = data_root
+        self.registry_path = os.path.join(data_root, "device_registry.json")
+        self.logger = logging.getLogger("InstanceManager")
+
+        # 核心容器
+        self.data_stores = {} 
+        self.schedulers = {}  # <--- 【关键修复】这里必须初始化！
+        
+        self._registry = {}
+
+        # 初始化
+        self._load_registry()
+        self._init_all_instances()
+
+    # ===========================================
+    # 📂 初始化与加载
+    # ===========================================
+    def _load_registry(self):
+        if os.path.exists(self.registry_path):
+            try:
+                with open(self.registry_path, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:
+                        self._registry = json.loads(content)
+                    else:
+                        self._registry = {}
+            except Exception as e:
+                self.logger.error(f"注册表损坏: {e}")
+                self._registry = {}
+        else:
+            self._registry = {}
+
+    def _save_registry(self):
+        try:
+            with open(self.registry_path, 'w', encoding='utf-8') as f:
+                json.dump(self._registry, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"保存注册表失败: {e}")
+
+    def _init_all_instances(self):
+        """启动时加载所有已注册账号"""
+        task_classes = get_all_tasks()
+
+        for instance_id, info in self._registry.items():
+            self.logger.info(f"正在加载实例: {info.get('display_name')} ({instance_id})")
+            
+            # 1. 加载 DataStore
+            store = InstanceDataStore(instance_id, self.data_root)
+            self.data_stores[instance_id] = store
+            
+            # 2. 加载 Scheduler
+            try:
+                device = DeviceOperator(info['serial'], instance_id)
+                if device.connect():
+                    self.logger.info(f"实例 {instance_id} 设备连接成功")
+                else:
+                    self.logger.warning(f"实例 {instance_id} 设备连接失败")
+                sched = InstanceScheduler(instance_id, device, store, task_classes)
+                self.schedulers[instance_id] = sched
+            except Exception as e:
+                self.logger.error(f"加载调度器失败 {instance_id}: {e}")
+
+    # ===========================================
+    # 🆕 核心创建逻辑 (修复版)
+    # ===========================================
+    def create_instance(self, display_name, serial):
+        safe_name = re.sub(r'[^a-zA-Z0-9]', '_', display_name).lower()
+        instance_id = safe_name
+        counter = 1
+        while instance_id in self._registry:
+            instance_id = f"{safe_name}_{counter}"
+            counter += 1
+
+        try:
+            # 1. 写入注册表
+            self._registry[instance_id] = {
+                "display_name": display_name,
+                "serial": serial,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            self._save_registry()
+
+            # 2. 创建 DataStore
+            new_store = InstanceDataStore(instance_id, self.data_root)
+            new_store.set_cfg("meta.serial", serial)
+            new_store.set_cfg("meta.alias", display_name)
+            self.data_stores[instance_id] = new_store
+
+            # 3. 创建 Scheduler
+            device = DeviceOperator(serial, instance_id)
+            if device.connect():
+                self.logger.info(f"新实例 {instance_id} 设备连接成功")
+            else:
+                self.logger.warning(f"新实例 {instance_id} 设备连接失败")
+            task_classes = get_all_tasks()
+            
+            sched = InstanceScheduler(instance_id, device, new_store, task_classes)
+            self.schedulers[instance_id] = sched  # <--- 这里现在安全了
+
+            self.logger.info(f"新实例创建成功: {display_name}")
+            self.sig_instance_list_changed.emit()
+            return True, instance_id
+
+        except Exception as e:
+            self.logger.error(f"创建实例失败: {e}")
+            if instance_id in self._registry:
+                del self._registry[instance_id]
+            return False, str(e)
+
+    # ===========================================
+    # 其他辅助方法
+    # ===========================================
+    def delete_instance(self, instance_id):
+        if instance_id not in self._registry:
+            return
+        
+        # 停止并删除 Scheduler
+        if instance_id in self.schedulers:
+            self.schedulers[instance_id].stop_scheduler()
+            del self.schedulers[instance_id]
+
+        if instance_id in self.data_stores:
+            del self.data_stores[instance_id]
+
+        del self._registry[instance_id]
+        self._save_registry()
+        self.sig_instance_list_changed.emit()
+
+    def update_instance(self, instance_id, new_serial=None, new_alias=None):
+        """
+        更新实例信息 (修改 Serial 或 别名)
+        """
+        if instance_id not in self._registry:
+            return False
+
+        # 1. 更新注册表
+        if new_serial:
+            self._registry[instance_id]['serial'] = new_serial
+        if new_alias:
+            self._registry[instance_id]['display_name'] = new_alias
+        
+        self._save_registry()
+
+        # 2. 更新 DataStore 里的 config.json
+        store = self.data_stores.get(instance_id)
+        if store:
+            if new_serial:
+                store.set_cfg("meta.serial", new_serial)
+            if new_alias:
+                store.set_cfg("meta.alias", new_alias)
+                
+            # 如果修改了 Serial，对应的 DeviceOperator 也需要更新 Serial
+            # 但为了简单，建议修改后提示用户重启程序，或者重新加载 Scheduler
+        
+        # 3. 发信号通知 UI 刷新列表
+        self.sig_instance_list_changed.emit()
+        return True
+
+    def get_all_instances(self):
+        result = []
+        for iid, info in self._registry.items():
+            store = self.data_stores.get(iid)
+            status = store.get_runtime("connect_status", "OFFLINE") if store else "ERROR"
+            result.append({
+                "id": iid,
+                "name": info["display_name"],
+                "serial": info["serial"],
+                "status": status
+            })
+        return result
+
+    def get_store(self, instance_id):
+        return self.data_stores.get(instance_id)
+    
+    def get_scheduler(self, instance_id):
+        return self.schedulers.get(instance_id)
+
+    # 手动添加入口
+    def add_instance_by_ip(self, display_name, ip_address):
+        # ... (保持之前的代码，此处省略以节省篇幅) ...
+        pass
+
+==================================================
+FILE: .\KSAS.py
+==================================================
+# -*- coding: utf-8 -*-
+import sys
+import os
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["MKL_NUM_THREADS"] = "2"
+os.environ["PADDLE_NUM_THREADS"] = "2"
+os.environ["OPENCV_NUM_THREADS"] = "2"
+import logging
+from PySide6.QtWidgets import QApplication
+from ui.main_window_logic import MainWindowLogic
+
+# =========== 👇 引入配置和 Airtest ADB 类 👇 ===========
+from config import global_config
+from airtest.core.android.adb import ADB
+
+# 用于存储我们要强制使用的路径
+_TARGET_ADB_PATH = None
+
+def setup_global_adb():
+    """
+    使用 Monkey Patch (移花接木) 技术，强制替换 Airtest 的 ADB 路径
+    """
+    global _TARGET_ADB_PATH
+    
+    # 1. 读取配置，找到真正的 adb.exe
+    use_internal = global_config.get("use_internal_adb", True)
+    custom_path = global_config.get("adb_path", "")
+    
+    if use_internal:
+        internal_path = os.path.join(os.getcwd(), "tools", "adb", "adb.exe")
+        if os.path.exists(internal_path):
+            _TARGET_ADB_PATH = internal_path
+    else:
+        if custom_path and os.path.exists(custom_path):
+            _TARGET_ADB_PATH = custom_path
+            
+    if not _TARGET_ADB_PATH:
+        print("⚠️ [System] 未找到指定 ADB，将使用系统默认")
+        return
+
+    print(f"✅ [System] 全局 ADB 路径已锁定: {_TARGET_ADB_PATH}")
+
+    # 2. 【黑魔法】保存原版的构造函数
+    _original_init = ADB.__init__
+
+    # 3. 【黑魔法】定义一个新的构造函数
+    def _patched_init(self, serialno=None, adb_path=None, server_addr=None, **kwargs):
+        # 关键点：如果调用时没指定 path，或者指定的是默认的，我们强行替换成我们的
+        if not adb_path:
+            adb_path = _TARGET_ADB_PATH
+            
+        # 调用原版逻辑，但传入了我们的 path
+        _original_init(self, serialno=serialno, adb_path=adb_path, server_addr=server_addr, **kwargs)
+
+    # 4. 【黑魔法】把 Airtest 的构造函数换成我们的
+    ADB.__init__ = _patched_init
+# ======================================================
+
+# 配置日志输出格式
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [%(name)s] - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger("Main")
+
+if __name__ == "__main__":
+    # 1. 先施展魔法 (必须在其他逻辑开始前)
+    setup_global_adb()
+
+    # 2. 创建 Qt App
+    app = QApplication(sys.argv)
+    
+    # 3. 创建主窗口逻辑
+    window = MainWindowLogic()
+    window.show()
+    
+    logger.info("KSAS UI Launched.")
+    
+    # 4. 进入事件循环
+    sys.exit(app.exec())
+
+==================================================
+FILE: .\scheduler.py
+==================================================
+# -*- coding: utf-8 -*-
+import time
+import logging
+import threading
+from datetime import datetime
+from PySide6.QtCore import QThread, Signal
+
+# 引入日志桥梁
+from logging_setup import GuiLogHandler, setup_file_logging
+
+class InstanceScheduler(QThread):
+    """
+    ALAS 风格的智能调度器 (Event-Driven Timeline Scheduler)
+    
+    特点：
+    1. 基于时间轴 (Next Run) 调度，而非死循环轮询。
+    2. 支持事件唤醒 (Config/NextRun 变更立即响应)。
+    3. 自动过滤无关信号 (体力变化不吵醒线程)。
+    4. 集成日志桥梁，将后台日志转发给 UI。
+    """
+    
+    # 信号：向 UI 发送日志 (Level, Message)
+    # 注意：有了 GuiLogHandler 后，这个信号主要由 Handler 触发，
+    # 但保留在这里作为备用或直接调用接口。
+    sig_log = Signal(str, str)
+
+    def __init__(self, instance_id, device, data, task_classes):
+        """
+        :param task_classes: 任务类列表 [HuntingTask, GatheringTask...]
+        """
+        super().__init__()
+        self.instance_id = instance_id
+        self.device = device
+        self.data = data
+        
+        # 1. 规范化 Logger 命名: "实例ID.模块"
+        # 这样 logging_setup 里的过滤器就能按实例ID拦截日志
+        self.logger = logging.getLogger(f"{instance_id}.Scheduler")
+        
+        # 2. 挂载日志桥梁 (Rainbow Bridge)
+        # 监听属于该实例的所有日志
+        self.instance_root_logger = logging.getLogger(instance_id)
+        self.instance_root_logger.setLevel(logging.INFO)
+        self.gui_handler = GuiLogHandler(data)
+        self.instance_root_logger.addHandler(self.gui_handler)
+        
+        import os
+        log_dir = os.path.join(data.base_dir, "log")
+        
+        # 2. 调用 logging_setup.py 里的函数，把它挂上去
+        self.file_handler = setup_file_logging(instance_id, log_dir)
+
+        self._is_running = False
+        
+        # 3. 核心组件：智能闹钟
+        self._wake_event = threading.Event()
+        
+        # 4. 信号连接
+        # 配置变了 -> 必须醒
+        self.data.sig_config_changed.connect(self.on_config_changed)
+        # 数据变了 (next_run 清空了) -> 必须醒
+        self.data.sig_stats_updated.connect(self.on_stat_changed)
+
+        # 5. 装载任务实例
+        self.tasks = []
+        for TaskCls in task_classes:
+            try:
+                task_obj = TaskCls(device, data)
+                self.tasks.append(task_obj)
+            except Exception as e:
+                self.logger.error(f"任务 {TaskCls} 初始化失败: {e}")
+
+    # ==========================================
+    # 📡 信号处理 (过滤网)
+    # ==========================================
+    
+    def on_config_changed(self, key, value):
+        """配置变更：无条件唤醒"""
+        if self._is_running:
+            self.logger.debug(f"配置变更 [{key}]，唤醒调度器")
+            self._wake_event.set()
+
+    def on_stat_changed(self, key, value):
+        """
+        数据变更：【关键过滤】
+        只有当变动的是 'next_run' 时才唤醒。
+        """
+        if self._is_running and "next_run" in key:
+            self.logger.info(f"任务计划变更 [{key}]，立即唤醒调度器")
+            self._wake_event.set()
+
+    # ==========================================
+    # 🎮 控制接口
+    # ==========================================
+
+    def start_scheduler(self):
+        if not self.isRunning():
+            self._is_running = True
+            self.data.set_runtime("is_running", True)
+            self._wake_event.clear()
+            self.start()
+            self.logger.info("调度器已启动")
+
+    def stop_scheduler(self):
+        if self.isRunning():
+            self._is_running = False
+            self.data.set_runtime("is_running", False)
+            # 按下闹钟，让它从 wait() 中醒来并退出循环
+            self._wake_event.set()
+            self.logger.info("正在停止调度器...")
+            self.wait() # 等待线程安全退出
+            
+            # 移除日志桥梁，防止内存泄漏或重复打印
+            self.instance_root_logger.removeHandler(self.gui_handler)
+            self.instance_root_logger.removeHandler(self.file_handler)
+            self.logger.info("调度器已停止")
+
+    # ==========================================
+    # 🔄 核心循环 (The Brain)
+    # ==========================================
+
+    def run(self):
+        self.logger.info("调度器线程已启动")
+        
+        # =========== 👇 新增：飞行前安检 (Pre-flight Check) 👇 ===========
+        self.logger.info("正在检查设备环境...", "INFO")
+        
+        # 1. 确保连接 (防止连不上)
+        if not self.device.connect():
+            self.logger.error("❌ 无法连接设备！请检查模拟器是否启动。", "ERROR")
+            self.data.set_runtime("is_running", False) # 告诉 UI 我停了
+            return # 直接退出线程
+            
+        # 2. 检查分辨率 (防止点歪)
+        if not self.device.check_resolution():
+            self.logger.error("❌ 分辨率不匹配！脚本要求: 720x1280 (允许横屏)", "ERROR")
+            self.logger.error("请修改模拟器分辨率设置并重启模拟器。", "ERROR")
+            self.data.set_runtime("is_running", False) # 告诉 UI 我停了
+            return # 直接退出线程
+            
+        self.logger.info("✅ 环境检查通过，开始调度任务。", "INFO")
+
+
+        while self._is_running:
+            self._wake_event.clear()
+            
+            now = datetime.now()
+            ready_tasks = []
+            next_wake_up_time = None 
+
+            # --- 1. 扫描阶段 ---
+            for task in self.tasks:
+                if not task.enabled:
+                    continue 
+                
+                if now >= task.next_run:
+                    ready_tasks.append(task)
+                else:
+                    if next_wake_up_time is None or task.next_run < next_wake_up_time:
+                        next_wake_up_time = task.next_run
+
+            # --- 2. 决策阶段 ---
+            if ready_tasks:
+                # A. 有活干：按优先级排序
+                ready_tasks.sort(key=lambda t: t.priority)
+                winner = ready_tasks[0]
+                
+                self.logger.info(f"开始执行任务: {winner.name}")
+                
+                # 执行任务
+                winner.execute() 
+                
+                time.sleep(1)
+            
+            else:
+                # B. 没活干：计算休眠时间
+                if next_wake_up_time:
+                    delta = (next_wake_up_time - now).total_seconds()
+                    wait_seconds = max(1, delta)
+                    msg = f"休眠中 (下次任务 {int(wait_seconds)}s 后)"
+                else:
+                    wait_seconds = 3600 
+                    msg = "无任务，待机中..."
+                
+                self.data.set_runtime("current_task", msg)
+                self.logger.info(msg) # 打印休眠日志，证明没死机
+                
+                # --- 3. 智能休眠 ---
+                self._wake_event.wait(wait_seconds)
+                
+                if self._is_running:
+                    self.logger.debug("调度器被唤醒/自然醒，重新评估...")
+
+==================================================
+FILE: .\structure_en.md
+==================================================
+# Final Architecture Blueprint: KSAS V3.4 (Independent Control Edition)
+
+**Core Design Philosophy:**
+1.  **Three-Layer Decoupling:** Complete separation of UI (Display) / Scheduler (Control) / Task (Execution).
+2.  **Per-Instance Isolation:** Each account possesses independent data, configuration, logs, and scheduling threads to prevent interference.
+3.  **Registration-Based Management:** Only devices explicitly "added" by the user are managed by the system, eliminating chaos from automatic scanning.
+4.  **Independent Control:** Each instance controls its own start/stop status, rejecting the crude "Start All" logic.
+
+---
+
+## 0. 🚀 The Launcher
+
+* **Role:** The program's **Shell** and **Updater**.
+* **Implementation:** Independent executable (e.g., `launcher.exe`).
+* **Responsibilities:**
+    1.  **Environment Self-Check:** Ensures the runtime environment is normal.
+    2.  **Auto-Update:** Checks for versions online; downloads and replaces core files if updates are available.
+    3.  **Invoke Core:** Uses a subprocess to call `python KSAS.py` to launch the main program. Users do not run the main script directly.
+
+---
+
+## 1. 🏢 The Instance Manager
+
+* **Role:** The device **Registry Office** and **Status Monitor**.
+* **Implementation:** Global Singleton `InstanceManager`.
+* **Core Logic:**
+    1.  **Startup Load:**
+        * Performs an ADB scan upon startup.
+        * Reads `data/device_registry.json` to load all known devices (connected or not).
+        * Initializes `DataStore` and `Scheduler` for each registered device; sets initial status to `OFFLINE`.
+    2.  **Manual Scan:**
+        * Executes `adb devices` only when the UI calls `scan_devices()`.
+        * **Registered Devices:** Updates status to `ONLINE`; UI icons light up.
+        * **Unregistered Devices:** Returns a "Candidate List", **does not automatically add them**, waits for user decision.
+    3.  **Manual Registration (Add Instance):**
+        * User selects a new device in the UI and confirms; calls `add_instance(serial, alias)`.
+        * Creates data objects and writes to `device_registry.json`.
+    4.  **Manual Removal:** Completely deletes the instance memory object and registry entry.
+
+---
+
+## 2. 💾 Data Center (Per-Instance DataStore)
+
+* **Role:** The **State Repository** for a single instance.
+* **Implementation:** Ordinary Class, one object per `device_id`.
+* **Responsibilities:**
+    1.  **Connection Status:** Maintains `connection_status` (ONLINE/OFFLINE).
+    2.  **Running Status:** Maintains `running_status` (IDLE/RUNNING/ERROR).
+    3.  **Config Management:** Stores task toggles and parameter settings for the instance (modifiable even when offline).
+    4.  **Signal Driving:** Emits Qt Signals to notify the UI when status or configuration changes.
+
+---
+
+## 3. 🗄️ Persistence System (Structured Persistence)
+
+* **Role:** File System Mapping.
+* **Directory Structure:**
+    ```text
+    root/
+    ├── data/
+    │   ├── global_settings.json       # Global Settings (ADB path, webhook URL, UI prefs)
+    │   ├── device_registry.json       # Device Registry (ID, Alias, Last Online Time)
+    │   │
+    │   ├── [device_id_A]/             # Exclusive folder for Instance A
+    │   │   ├── config.json            # Task Configuration
+    │   │   ├── runtime.log            # Runtime Logs
+    │   │   └── snapshots/             # Error Screenshot Storage
+    │   │
+    │   └── [device_id_B]/             # Exclusive folder for Instance B
+    │       ├── ...
+    ```
+
+---
+
+## 4. ⏰ Central Scheduler (Per-Instance Scheduler)
+
+* **Role:** The **Independent Commander** for a single instance.
+* **Implementation:** Inherits `QThread`, one thread per instance.
+* **Control Logic:**
+    1.  **Independent Start/Stop:** Provides `start_scheduler()` and `stop_scheduler()` methods for independent UI buttons.
+    2.  **Safe Execution:**
+        * Refuses to start if status is `OFFLINE`.
+        * If user clicks "Stop", exits safely after the current task completes its atomic operation.
+    3.  **Crash Prevention:** Captures all Task exceptions within `run()`, triggers a snapshot, records logs, and ensures the guardian thread does not crash.
+
+---
+
+## 5. 🛠️ Task Executor (Instance-Aware Tasks)
+
+* **Role:** Business Logic Unit.
+* **Implementation:** Subclass of `BaseTask`.
+* **Responsibilities:**
+    1.  **Context Awareness:** Must hold `instance_id` to read/write correct data.
+    2.  **Logic Execution:** Read Config -> Call Toolbox -> Update Status.
+
+---
+
+## 6. 🧰 Toolbox (Toolbox & Snapshot)
+
+* **Role:** Low-level Operations Library & Evidence Retention.
+* **Implementation:** `basic.py` (Airtest Wrapper) + `snapshot_manager.py`.
+* **Responsibilities:**
+    1.  **Safe Invocation:** Encapsulates Airtest APIs, catches low-level exceptions, returns Boolean results.
+    2.  **Snapshot Mechanism:**
+        * Calls `adb screencap` when a task errors or a key step fails.
+        * Saves the image to `data/[device_id]/snapshots/`.
+        * Returns the image path to the logging system.
+
+---
+
+## 7. 🖥️ Native UI (Multi-Instance View)
+
+* **Role:** Console / Dashboard.
+* **Core Layout:**
+    1.  **Top Toolbar:**
+        * `[ 🔄 Refresh Connection ]`: Manually triggers ADB scan, updates online status.
+        * `[ ➕ Add Device ]`: Pops up a dialog to select and add from scanned unknown devices.
+        * `[ ⚙️ Global Settings ]`: Modifies general configs like ADB path.
+    2.  **Instance Area (Tab Widget or List):**
+        * **Dynamic Rendering:** Generates tabs based on `device_registry`.
+        * **Independent Control Panel (Inside each tab):**
+            * **Status Bar:** Displays Alias, Connection Status (Lit/Grayed), Current Stamina/AP.
+            * **Operation Area:** `[ ▶ Start Script ]` / `[ ⏹ Stop Script ]` (Mutually exclusive buttons).
+            * **Config Area:** Task checkbox list.
+            * **Log Area:** Scrolling log exclusive to this instance (includes screenshot links).
+
+---
+
+## 8. 🔌 Core Glue (Glue Code)
+
+* **Role:** Signal Routing.
+* **Mechanism:**
+    * **UI Button -> Scheduler:** Clicking "Start" for Instance A directly calls `instance_manager.get_scheduler(A).start()`.
+    * **DataStore -> UI:** If only Instance A's stamina changes, only Instance A's UI controls are refreshed, avoiding a full interface redraw.
+
+---
+
+## 9. 📇 Task Registry (Task Registry)
+
+* **Role:** Static Dictionary.
+* **Responsibilities:** Maintains the mapping between Task Names and Classes for UI configuration list generation.
+
+---
+
+## 10. 📝 Log System (Instance-Isolated Logging)
+
+* **Role:** Distributing Recorder.
+* **Strategy:**
+    1.  **Physical Isolation:** Logs are strictly written to `data/[device_id]/runtime.log`.
+    2.  **Real-time Feedback:** Pushes log text (and screenshot paths) to the UI log window via Signals.
+
+==================================================
+FILE: .\structure_zh.md
+==================================================
+# 最终架构蓝图：KSAS V3.4 (独立管控版)
+
+**核心设计理念：**
+1.  **三层解耦：** UI (显示) / Scheduler (调度) / Task (执行) 彻底分离。
+2.  **实例隔离 (Per-Instance)：** 每个账号拥有独立的数据、配置、日志和调度线程，互不干扰。
+3.  **注册制管理：** 只有用户明确“添加”的设备才会被系统接管，杜绝自动扫描的混乱。
+4.  **独立管控：** 每个实例独立控制启停，拒绝“一键全开”的粗暴逻辑。
+
+---
+
+## 0. 🚀 启动器 (The Launcher)
+
+* **角色：** 程序的**外壳**与**更新器**。
+* **实现：** 独立的可执行文件 (如 `launcher.exe`)。
+* **职责：**
+    1.  **环境自检：** 确保运行环境正常。
+    2.  **自动更新：** 联网检查版本，若有更新则下载并替换核心文件。
+    3.  **唤起核心：** 使用子进程调用 `python KSAS.py` 启动主程序。用户不直接运行主脚本。
+
+---
+
+## 1. 🏢 实例管理器 (The Instance Manager)
+
+* **角色：** 设备的**户籍办**与**状态监视器**。
+* **实现：** 全局单例 `InstanceManager`。
+* **核心逻辑：**
+    1.  **注册加载 (Startup Load)：**
+        * 启动时进行一次 ADB 扫描。
+        * 读取 `data/device_registry.json`，加载所有已知设备（无论是否连接）。
+        * 为每个注册设备初始化 `DataStore` 和 `Scheduler`，初始状态设为 `OFFLINE`。
+    2.  **手动刷新 (Manual Scan)：**
+        * 仅当 UI 调用 `scan_devices()` 时执行 `adb devices`。
+        * **已注册设备：** 更新状态为 `ONLINE`，UI 图标点亮。
+        * **未注册设备：** 返回“候选列表”，**不自动添加**，等待用户决策。
+    3.  **手动注册 (Add Instance)：**
+        * 用户在 UI 选择新设备并确认后，调用 `add_instance(serial, alias)`。
+        * 创建数据对象，写入 `device_registry.json`。
+    4.  **手动移除：** 彻底删除实例内存对象和注册表条目。
+
+---
+
+## 2. 💾 数据中心 (Per-Instance DataStore)
+
+* **角色：** 单个实例的**状态仓库**。
+* **实现：** 普通 Class，每个 `device_id` 对应一个对象。
+* **职责：**
+    1.  **连接状态：** 维护 `connection_status` (ONLINE/OFFLINE)。
+    2.  **运行状态：** 维护 `running_status` (IDLE/RUNNING/ERROR)。
+    3.  **配置管理：** 存储该实例的任务开关、参数设置（即使离线也可修改）。
+    4.  **信号驱动：** 状态或配置变更时，发射 Qt 信号通知 UI。
+
+---
+
+## 3. 🗄️ 持久化系统 (Structured Persistence)
+
+* **角色：** 文件系统映射。
+* **目录结构：**
+    ```text
+    root/
+    ├── data/
+    │   ├── global_settings.json       # 全局设置 (ADB路径、通知URL、界面偏好)
+    │   ├── device_registry.json       # 设备户口本 (ID、别名、最后上线时间)
+    │   │
+    │   ├── [device_id_A]/             # 实例 A 专属文件夹
+    │   │   ├── config.json            # 任务配置
+    │   │   ├── runtime.log            # 运行日志
+    │   │   └── snapshots/             # 报错截图存放区
+    │   │
+    │   └── [device_id_B]/             # 实例 B 专属文件夹
+    │       ├── ...
+    ```
+
+---
+
+## 4. ⏰ 中央调度器 (Per-Instance Scheduler)
+
+* **角色：** 单个实例的**独立指挥官**。
+* **实现：** 继承 `QThread`，每个实例一个线程。
+* **控制逻辑：**
+    1.  **独立启停：** 提供 `start_scheduler()` 和 `stop_scheduler()` 方法，供 UI 上的独立按钮调用。
+    2.  **安全运行：**
+        * 若状态为 `OFFLINE`，拒绝启动。
+        * 若用户点击“停止”，当前任务执行完原子操作后安全退出。
+    3.  **防崩循环：** `run()` 内部捕获所有 Task 异常，触发快照并记录日志，确保护送线程不崩溃。
+
+---
+
+## 5. 🛠️ 任务执行器 (Instance-Aware Tasks)
+
+* **角色：** 业务逻辑单元。
+* **实现：** `BaseTask` 子类。
+* **职责：**
+    1.  **上下文感知：** 必须持有 `instance_id` 以便读写正确的数据。
+    2.  **逻辑执行：** 读取配置 -> 调用 Toolbox -> 更新状态。
+
+---
+
+## 6. 🧰 工具箱 (Toolbox & Snapshot)
+
+* **角色：** 底层操作库与证据留存。
+* **实现：** `basic.py` (Airtest 封装) + `snapshot_manager.py`。
+* **职责：**
+    1.  **安全调用：** 封装 Airtest API，捕获底层异常，返回 Boolean 结果。
+    2.  **快照机制：** * 当任务报错或关键步骤失败时，调用 `adb screencap`。
+        * 图片保存至 `data/[device_id]/snapshots/`。
+        * 返回图片路径给日志系统。
+
+---
+
+## 7. 🖥️ 原生UI (Multi-Instance View)
+
+* **角色：** 控制台。
+* **核心布局：**
+    1.  **顶部工具栏：**
+        * `[ 🔄 刷新连接 ]`：手动触发 ADB 扫描，更新在线状态。
+        * `[ ➕ 添加设备 ]`：弹出对话框，从扫描到的未知设备中选择添加。
+        * `[ ⚙️ 全局设置 ]`：修改 ADB 路径等通用配置。
+    2.  **实例区域 (Tab Widget 或 列表)：**
+        * **动态渲染：** 根据 `device_registry` 生成页签。
+        * **独立控制面板 (每个页签内)：**
+            * **状态栏：** 显示别名、连接状态 (亮/灰)、当前体力。
+            * **操作区：** `[ ▶ 启动脚本 ]` / `[ ⏹ 停止脚本 ]` (互斥按钮)。
+            * **配置区：** 任务复选框列表。
+            * **日志区：** 该实例专属的滚动日志（含截图链接）。
+
+---
+
+## 8. 🔌 核心胶水 (Glue Code)
+
+* **角色：** 信号路由。
+* **机制：**
+    * **UI按钮 -> Scheduler:** 点击实例 A 的“启动”，直接调用 `instance_manager.get_scheduler(A).start()`。
+    * **DataStore -> UI:** 实例 A 只有体力变化，只刷新实例 A 的 UI 控件，不重绘整个界面。
+
+---
+
+## 9. 📇 任务注册中心 (Task Registry)
+
+* **角色：** 静态字典。
+* **职责：** 维护任务名称与 Class 的映射，供 UI 生成配置列表。
+
+---
+
+## 10. 📝 日志系统 (Instance-Isolated Logging)
+
+* **角色：** 分流记录员。
+* **策略：**
+    1.  **物理隔离：** 日志文件严格写入 `data/[device_id]/runtime.log`。
+    2.  **实时反馈：** 通过 Signal 将日志文本（及截图路径）推送到 UI 的日志窗口。
+
+==================================================
+FILE: .\task_registry.py
+==================================================
+# tasks/task_registry.py
+
+# 1. 引入你所有的任务类
+from tasks.example_task import ExampleTask
+from tasks.combat.beast import BeastTask
+from tasks.combat.rally import RallyTask
+from tasks.daily.intel import IntelTask
+from tasks.daily.chest import ChestTask
+from tasks.daily.gather import GatherTask
+from tasks.shop.general_shop import ShopTask
+from tasks.daily.stamina_check import StaminaCheckTask
+
+# 2. 把它们放进一个列表
+TASK_CLASSES = [
+    # ExampleTask, # 示例任务可以先注释掉
+    BeastTask,
+    RallyTask,
+    IntelTask,
+    ChestTask,
+    GatherTask,
+    ShopTask,
+    StaminaCheckTask,
+]
+
+def get_all_tasks():
+    return TASK_CLASSES
+
+==================================================
+FILE: .\data\device_registry.json
+==================================================
+{
+    "deep_sl_test": {
+        "display_name": "Deep SL Test",
+        "serial": "emulator-5554",
+        "created_at": "2025-11-19 00:17:35"
+    },
+    "deepwoods": {
+        "display_name": "deepwoods",
+        "serial": "127.0.0.1:5557",
+        "created_at": "2025-11-19 17:44:27"
+    },
+    "deep_sl_002": {
+        "display_name": "deep sl 002",
+        "serial": "127.0.0.1:5563",
+        "created_at": "2025-11-19 23:31:05"
+    }
+}
+
+==================================================
+FILE: .\data\diana.txt
+==================================================
+lvl 1:
+	rally: -23, solo: -9
+lvl 2:
+	rally: -22, solo: -9
+lvl 3:
+	rally: -22, solo: -9
+lvl 4: 
+	rally: -21, solo: -9
+lvl 5:
+	rally: -20, solo: -8
+
+==================================================
+FILE: .\data\README.md
+==================================================
+# Data Directory
+This directory contains runtime data, logs, and user configurations.
+Content is ignored by git, except for this README.
+
+
+==================================================
+FILE: .\data\deepwoods\config.json
+==================================================
+{
+    "instance_name": "deepwoods",
+    "adb_device_id": "",
+    "modules": {
+        "beasttask": {
+            "enable": false
+        },
+        "rallytask": {
+            "enable": false
+        },
+        "inteltask": {
+            "enable": false
+        },
+        "chesttask": {
+            "enable": false
+        },
+        "gathertask": {
+            "enable": false
+        },
+        "shoptask": {
+            "enable": false
+        },
+        "staminachecktask": {
+            "enable": true
+        }
+    },
+    "meta": {
+        "serial": "127.0.0.1:5557",
+        "alias": "deepwoods"
+    }
+}
+
+==================================================
+FILE: .\data\deepwoods\statistics.json
+==================================================
+{
+    "stamina": 75,
+    "resources": {
+        "food": 0,
+        "wood": 0,
+        "stone": 0,
+        "iron": 0
+    },
+    "tasks": {
+        "StaminaCheckTask": {
+            "next_run": "2025-11-20 02:14:55"
+        }
+    }
+}
+
+==================================================
+FILE: .\data\deep_sl_002\config.json
+==================================================
+{
+    "instance_name": "deep_sl_002",
+    "adb_device_id": "",
+    "modules": {
+        "beasttask": {
+            "enable": false
+        },
+        "rallytask": {
+            "enable": false
+        },
+        "inteltask": {
+            "enable": false
+        },
+        "chesttask": {
+            "enable": false
+        },
+        "gathertask": {
+            "enable": false
+        },
+        "shoptask": {
+            "enable": false
+        },
+        "staminachecktask": {
+            "enable": true
+        }
+    },
+    "meta": {
+        "serial": "127.0.0.1:5563",
+        "alias": "deep sl 002"
+    }
+}
+
+==================================================
+FILE: .\data\deep_sl_002\datastore.json
+==================================================
+
+
+==================================================
+FILE: .\data\deep_sl_002\statistics.json
+==================================================
+{
+    "stamina": 180,
+    "resources": {
+        "food": 0,
+        "wood": 0,
+        "stone": 0,
+        "iron": 0
+    },
+    "tasks": {
+        "StaminaCheckTask": {
+            "next_run": "2025-11-20 02:14:37"
+        }
+    }
+}
+
+==================================================
+FILE: .\data\deep_sl_test\config.json
+==================================================
+{
+    "instance_name": "deep_sl_test",
+    "adb_device_id": "",
+    "modules": {
+        "general": {
+            "auto_restart": true
+        },
+        "hunting": {
+            "enable": false,
+            "min_stamina": 20,
+            "level": 1
+        },
+        "gathering": {
+            "enable": false,
+            "resource_type": "Wood"
+        },
+        "training": {
+            "enable": false
+        },
+        "exampletask": {
+            "enable": true,
+            "interval": 3600
+        }
+    },
+    "meta": {
+        "alias": "Deep SL Test",
+        "version": "1.0",
+        "created_at": "",
+        "serial": "emulator-5554"
+    }
+}
+
+==================================================
+FILE: .\data\deep_sl_test\statistics.json
+==================================================
+{
+    "resources": {
+        "wood": 0,
+        "meat": 0,
+        "coal": 0,
+        "steel": 0
+    },
+    "stamina": 0,
+    "last_active": "",
+    "daily_stats": {
+        "kill_count": 0,
+        "gather_count": 0
+    },
+    "tasks": {
+        "ExampleTask": {
+            "next_run": "2025-11-19 13:58:57"
+        }
+    }
+}
+
+==================================================
+FILE: .\i18n\i18n.py
+==================================================
+# -*- coding: utf-8 -*-
+
+# ==========================================
+# 🌍 全局语言设置 (Global Language Setting)
+# ==========================================
+
+# 默认语言: 'cn' (中文) / 'en' (English)
+CURRENT_LANG = "en"
+
+# ==========================================
+# 📖 翻译字典 (Translation Dictionary)
+# ==========================================
+TEXTS = {
+    # --- 侧边栏 (Sidebar) ---
+    "app_title": {
+        "cn": "KSAS",
+        "en": "KSAS"
+    },
+    "btn_add_instance": {
+        "cn": "➕ 添加实例",
+        "en": "➕ Add Instance"
+    },
+    "btn_global_settings": {
+        "cn": "⚙️ 设置",
+        "en": "⚙️ Settings"
+    },
+    "btn_del_instance": {
+        "cn": "🗑️ 删除",
+        "en": "🗑️ Delete"
+    },
+
+    # --- 顶部控制区 (Header / Dashboard) ---
+    "lbl_default_instance": {
+        "cn": "请选择实例",
+        "en": "Select Instance"
+    },
+    "status_offline": {
+        "cn": "🔴 离线",
+        "en": "🔴 Offline"
+    },
+    "status_running": {
+        "cn": "🟢 运行中",
+        "en": "🟢 Running"
+    },
+    "status_error": {
+        "cn": "⚠️ 异常",
+        "en": "⚠️ Error"
+    },
+
+    # --- 核心切换按钮 (Toggle Button) ---
+    # 注意：这里是用状态作为 Key，代码里逻辑判断后取值
+    "btn_start": {
+        "cn": "▶ 启动",
+        "en": "▶ Start"
+    },
+    "btn_stop": {
+        "cn": "⏹ 停止",
+        "en": "⏹ Stop"
+    },
+
+    # --- 任务列表区 (Task Area) ---
+    "col_task_name": {
+        "cn": "任务名称",
+        "en": "Task Name"
+    },
+    "btn_task_settings": {
+        "cn": "设置",
+        "en": "Config"
+    },
+
+    # --- 日志区 (Log Area) ---
+    "lbl_log_title": {
+        "cn": "运行日志",
+        "en": "Runtime Log"
+    },
+    "chk_auto_scroll": {
+        "cn": "自动滚动",
+        "en": "Auto Scroll"
+    },
+    "btn_clear_log": {
+        "cn": "清空",
+        "en": "Clear"
+    },
+
+    # --- 弹窗提示 (Messages) ---
+    "msg_title_error": {
+        "cn": "错误",
+        "en": "Error"
+    },
+    "msg_create_success": {
+        "cn": "实例创建成功！",
+        "en": "Instance Created!"
+    },
+    "msg_delete_confirm": {
+        "cn": "确定要删除这个实例吗？数据将无法恢复。",
+        "en": "Are you sure to delete this instance? Data cannot be recovered."
+    }
+}
+
+# ==========================================
+# 🔧 工具函数 (Helper Functions)
+# ==========================================
+
+def get_text(key):
+    """
+    获取翻译文本
+    用法: get_text("btn_start") -> "▶ 启动"
+    """
+    data = TEXTS.get(key)
+    if not data:
+        # 如果 Key 没找到，直接返回 Key 本身，方便调试发现漏了啥
+        return f"[{key}]"
+    
+    # 优先取当前语言，取不到就降级用中文，还不行就返回空串
+    return data.get(CURRENT_LANG, data.get("cn", ""))
+
+def set_language(lang_code):
+    """
+    切换全局语言
+    :param lang_code: 'cn' or 'en'
+    """
+    global CURRENT_LANG
+    if lang_code in ["cn", "en"]:
+        CURRENT_LANG = lang_code
+
+==================================================
+FILE: .\i18n\__init__.py
+==================================================
+
+
+==================================================
+FILE: .\tasks\base_task.py
+==================================================
+# tasks/base_task.py
+# -*- coding: utf-8 -*-
+
+import os
+import logging
+from airtest.core.api import Template
+from datetime import datetime, timedelta
+
+class BaseTask:
+    """
+    所有任务的基类 (ALAS 风格)
+    
+    核心属性：
+    1. name: 任务名 (用于在 JSON 里查找配置)
+    2. priority: 优先级 (数字越大越重要，或者越小越重要，这里我们定：数字越小优先级越高 1 > 10)
+    3. default_interval: 默认间隔秒数 (如果 config 没填就用这个)
+    """
+    DIANA_COST_TABLE = {
+        1: (23, 9),
+        2: (22, 9),
+        3: (22, 9),
+        4: (21, 9),
+        5: (20, 8)
+    }
+
+    # 默认消耗 (没有戴安娜时)
+    DEFAULT_COST = (25, 10)
+
+
+
+    def __init__(self, device, data):
+        """
+        :param device: basic.py 的 DeviceOperator
+        :param data: datastore.py 的 InstanceDataStore
+        """
+        self.device = device
+        self.data = data
+        self.logger = logging.getLogger(f"{self.data.instance_id}.Task.{self.name}")
+
+    # ==========================================
+    # ⚙️ 子类必须重写/配置的属性
+    # ==========================================
+    @property
+    def name(self):
+        return "BaseTask"
+
+    @property
+    def priority(self):
+        """优先级：1 (最高/紧急) ~ 100 (低/闲时)"""
+        return 50
+
+    @property
+    def default_interval(self):
+        """默认循环间隔 (秒)，默认 1 小时"""
+        return 3600
+
+    # ==========================================
+    # ⏱️ ALAS 核心调度逻辑 (Scheduler 会调用这些)
+    # ==========================================
+    
+    @property
+    def enabled(self):
+        """检查用户是否在 UI 上开启了这个任务"""
+        # 读取 config.json: modules.hunting.enable
+        return self.data.get_cfg(f"modules.{self.name.lower()}.enable", False)
+
+    @property
+    def next_run(self):
+        """
+        从 DataStore 读取下次运行时间
+        :return: datetime 对象
+        """
+        # 读取 statistics.json: tasks.Hunting.next_run
+        # 格式是字符串 "2023-11-19 12:00:00"
+        time_str = self.data.get_stat(f"tasks.{self.name}.next_run", "1970-01-01 00:00:00")
+        try:
+            return datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return datetime.min # 如果格式错，立即执行
+
+    def set_next_run(self, seconds=None):
+        """
+        设置下次运行时间
+        :param seconds: 多少秒后运行。如果不填，尝试去 config 读取 'interval'
+        """
+        if seconds is None:
+            # 尝试从配置读取用户设定的间隔，没有则用默认
+            seconds = self.data.get_cfg(f"modules.{self.name.lower()}.interval", self.default_interval)
+        
+        future_time = datetime.now() + timedelta(seconds=int(seconds))
+        time_str = future_time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 保存进 statistics.json (这就是日程表)
+        self.data.set_stat(f"tasks.{self.name}.next_run", time_str)
+        self.logger.info(f"下次运行安排在: {time_str}")
+
+    # ==========================================
+    # 🏃 运行入口 (不要重写这个，重写 run_impl)
+    # ==========================================
+    def execute(self):
+        """
+        调度器调用的标准入口
+        1. 检查是否真的要跑
+        2. 执行逻辑
+        3. 自动更新下次时间
+        """
+        self.logger.info(f"=== 任务启动: {self.name} ===")
+        
+        # 1. 更新 UI 状态
+        self.data.set_runtime("current_task", self.name)
+        
+        # 2. 执行具体逻辑 (子类实现)
+        try:
+            success = self.run_impl()
+        except Exception as e:
+            self.logger.error(f"任务崩溃: {e}")
+            success = False
+        
+        # 3. 完事后，安排下次时间
+        # 如果任务失败了，是立即重试还是按原计划？这里暂定按原计划
+        # ALAS 的做法是：如果失败，可能只 sleep 5分钟而不是 1小时
+        if success:
+            self.set_next_run() # 用 config 里的正常间隔
+        else:
+            self.set_next_run(seconds=300) # 失败后 5 分钟重试
+            
+        self.logger.info(f"=== 任务结束: {self.name} ===")
+
+    def run_impl(self):
+        """
+        【子类请重写这个方法】
+        真正的业务逻辑写在这里 (打怪、采集等)
+        :return: True(成功) / False(失败)
+        """
+        raise NotImplementedError
+
+    # ==========================================
+    # 🛠️ 常用快捷指令 (Shortcut)
+    # ==========================================
+    def screenshot(self):
+        """任务中截图"""
+        # 调用 device 的截图功能，tag 是任务名
+        pass # 实际调用 basic.py
+
+    def calculate_cost(self, mode="rally"):
+        """
+        计算本次出征的体力消耗
+        :param mode: 'rally' (集结) 或 'beast' (打野)
+        :return: int (消耗值)
+        """
+        # 1. 先看戴安娜在不在
+        if self.find_diana():
+            # 2. 如果在，去读配置里的技能等级
+            # 我们把这个配置放在 general 里，因为它是账号属性
+            skill_level = self.data.get_cfg("modules.general.diana_level", 1)
+            
+            # 查表
+            costs = self.DIANA_COST_TABLE.get(skill_level, self.DEFAULT_COST)
+            
+            cost = costs[0] if mode == "rally" else costs[1]
+            self.logger.info(f"触发戴安娜减耗 (Lv.{skill_level}): 本次消耗 {cost}")
+            return cost
+        
+        else:
+            # 3. 不在，用默认值
+            cost = self.DEFAULT_COST[0] if mode == "rally" else self.DEFAULT_COST[1]
+            self.logger.info(f"常规消耗: {cost}")
+            return cost
+
+
+    # ==========================================
+    # 📊 游戏信息读取 (Game Info)
+    # ==========================================
+
+    def find_diana(self):
+        """
+        在出征界面寻找 Diana 的头像
+        """
+        # 记得把 Diana 的头像截图放在 assets/images/heroes/diana.png
+        # 建议截那个圆圆的头像，特征明显一点
+        img_diana = Template(r"assets/images/heroes/diana.png", threshold=0.9)
+        
+        if self.device.exists(img_diana):
+            self.logger.info("检测到队伍包含 Diana")
+            return True
+        else:
+            self.logger.debug("队伍中未检测到 Diana")
+            return False
+
+
+
+
+
+
+
+
+
+
+
+    """
+    def get_current_stamina(self):
+        '''
+        读取当前体力值
+        流程: 确保主页 -> 点头像 -> 点加号 -> OCR -> Back x2
+        :return: int (当前体力)
+        '''
+        from airtest.core.api import Template
+
+        # 1. 确保在主页
+        if not self.device.ensure_home():
+            self.logger.error("无法回到主页，放弃读取体力")
+            return 0
+            
+        # 2. 点击头像 (8, 8, 80, 80)
+        # Airtest 的 touch 支持绝对坐标 (x, y)
+        # 我们取中心点 (44, 44)
+        self.logger.info("点击头像进入 Profile")
+        self.device.click((44, 44))
+        self.device.sleep(2) # 等待动画
+        
+        # 3. 点击加号进入体力页
+        # 假设加号图片是 assets/images/profile_plus.png
+        img_plus = Template(r"assets/images/profile_plus.png")
+        if not self.device.exists(img_plus):
+            self.logger.error("未找到体力加号按钮")
+            self.device.press_back() # 尝试退回
+            return 0
+            
+        self.logger.info("点击加号查看体力")
+        self.device.click(img_plus)
+        self.device.sleep(1.5)
+        
+        # 4. OCR 识别
+        # 区域: (350, 270, 480, 300)
+        area = (350, 270, 480, 300) 
+        text = self.device.get_text(area)
+        self.logger.debug(f"OCR Stamina Raw: {text}")
+        
+        # 5. 解析 "100/200" 格式
+        if "/" in text:
+            current_str = text.split("/")[0]
+        else:
+            current_str = text
+        val = self.device.parse_number(current_str)
+        
+        # 6. 更新到 DataStore
+        self.data.set_stat("stamina", val)
+        self.logger.info(f"当前体力: {val}")
+        
+        # 7. 返回主页 (Back x2)
+        self.logger.info("返回主页")
+        self.device.press_back()
+        self.device.sleep(1)
+        self.device.press_back()
+        self.device.sleep(1)
+        
+        return val
+    """
+
+==================================================
+FILE: .\tasks\example_task.py
+==================================================
+# tasks/example_task.py
+import time
+from tasks.base_task import BaseTask
+
+class ExampleTask(BaseTask):
+    @property
+    def name(self):
+        return "ExampleTask"
+
+    @property
+    def priority(self):
+        return 10 # 优先级
+
+    @property
+    def default_interval(self):
+        return 60 # 默认每 60 秒跑一次
+
+    def run_impl(self):
+        """
+        模拟干活
+        """
+        self.logger.info(">>> ExampleTask 开始执行！正在模拟点击...")
+        time.sleep(2) # 假装在点屏幕
+        self.logger.info(">>> 点击完成，正在识别...")
+        time.sleep(1) # 假装在 OCR
+        self.logger.info(">>> 任务完成！")
+        return True
+
+==================================================
+FILE: .\tasks\general_settings.py
+==================================================
+# tasks/general_settings.py
+# -*- coding: utf-8 -*-
+from tasks.base_task import BaseTask
+
+class GeneralSettings(BaseTask):
+    """
+    这是一个虚拟任务，不参与调度。
+    它的作用仅仅是定义 [通用设置] 的 UI 布局。
+    """
+    
+    @property
+    def name(self):
+        # 对应 config.json 里的 "general" 模块
+        return "General" 
+    
+    @property
+    def priority(self):
+        return 0 # 没用，但不写可能会报错
+
+    # 👇 这里定义 UI 上显示什么
+    config_schema = [
+        {
+            "key": "auto_restart", 
+            "type": "checkbox", 
+            "label": "异常自动重启 (Auto Restart)", 
+            "default": True
+        },
+        {
+            "key": "total_march_slots", 
+            "type": "spinbox", 
+            "label": "行军队列总数 (Total Queues)", 
+            "min": 1, 
+            "max": 6, 
+            "default": 4
+        },
+        {
+            "key": "diana_level", 
+            "type": "spinbox", 
+            "label": "戴安娜技能等级 (Diana Skill Lvl)", 
+            "min": 0, 
+            "max": 5, 
+            "default": 5
+        }
+    ]
+
+    def run_impl(self):
+        # 这是一个哑巴任务，永远不会被执行
+        return True
+
+==================================================
+FILE: .\tasks\verify_stamina.py
+==================================================
+# tasks/verify_stamina.py
+import logging
+import sys
+import os
+
+# 添加父目录到 sys.path 以便导入 basic 和 datastore
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# 模拟环境
+from basic import DeviceOperator
+from datastore import InstanceDataStore
+from tasks.base_task import BaseTask
+
+def test_stamina_detection():
+    print("=== 开始测试体力检测逻辑 ===")
+    
+    # 1. 初始化组件
+    # 注意：这里需要真实的 serial，请用户手动修改
+    serial = "emulator-5554" 
+    instance_id = "test_instance"
+    
+    device = DeviceOperator(serial, instance_id)
+    data = InstanceDataStore(instance_id)
+    
+    # 2. 连接设备
+    if not device.connect():
+        print("设备连接失败，请检查 serial")
+        return
+
+    # 3. 实例化任务
+    task = BaseTask(device, data)
+    
+    # 4. 执行体力检测
+    try:
+        stamina = task.get_current_stamina()
+        print(f"检测结果: {stamina}")
+        
+        # 5. 验证 DataStore
+        stored_val = data.get_stat("stamina")
+        print(f"DataStore 中的值: {stored_val}")
+        
+        if stamina == stored_val:
+            print("✅ 测试通过: 读取值与存储值一致")
+        else:
+            print("❌ 测试失败: 读取值与存储值不一致")
+            
+    except Exception as e:
+        print(f"❌ 测试过程中发生异常: {e}")
+
+if __name__ == "__main__":
+    test_stamina_detection()
+
+
+==================================================
+FILE: .\tasks\wolf.py
+==================================================
+
+
+==================================================
+FILE: .\tasks\__init.py
+==================================================
+
+
+==================================================
+FILE: .\tasks\combat\beast.py
+==================================================
+from tasks.base_task import BaseTask
+
+class BeastTask(BaseTask):
+    @property
+    def name(self):
+        return "Beast"
+
+    @property
+    def priority(self):
+        return 40
+
+    def run_impl(self):
+        self.logger.info("Executing Beast Task...")
+        # TODO: Implement logic
+        return True
+
+
+==================================================
+FILE: .\tasks\combat\rally.py
+==================================================
+from tasks.base_task import BaseTask
+
+class RallyTask(BaseTask):
+    @property
+    def name(self):
+        return "Rally"
+
+    @property
+    def priority(self):
+        return 45
+
+    def run_impl(self):
+        self.logger.info("Executing Rally Task...")
+        # TODO: Implement logic
+        return True
+
+
+==================================================
+FILE: .\tasks\combat\__init__.py
+==================================================
+
+
+==================================================
+FILE: .\tasks\daily\chest.py
+==================================================
+from tasks.base_task import BaseTask
+
+class ChestTask(BaseTask):
+    @property
+    def name(self):
+        return "Chest"
+
+    @property
+    def priority(self):
+        return 70
+
+    def run_impl(self):
+        self.logger.info("Executing Chest Task...")
+        # TODO: Implement logic
+        return True
+
+
+==================================================
+FILE: .\tasks\daily\gather.py
+==================================================
+from tasks.base_task import BaseTask
+
+class GatherTask(BaseTask):
+    @property
+    def name(self):
+        return "Gather"
+
+    @property
+    def priority(self):
+        return 80
+
+    def run_impl(self):
+        self.logger.info("Executing Gather Task...")
+        # TODO: Implement logic
+        return True
+
+
+==================================================
+FILE: .\tasks\daily\intel.py
+==================================================
+from tasks.base_task import BaseTask
+
+class IntelTask(BaseTask):
+    @property
+    def name(self):
+        return "Intel"
+
+    @property
+    def priority(self):
+        return 60
+
+    def run_impl(self):
+        self.logger.info("Executing Intel Task...")
+        # TODO: Implement logic
+        return True
+
+
+==================================================
+FILE: .\tasks\daily\stamina_check.py
+==================================================
+# tasks/daily/stamina_check.py
+from tasks.base_task import BaseTask
+
+class StaminaCheckTask(BaseTask):
+    @property
+    def name(self):
+        return "StaminaCheckTask"
+
+    @property
+    def priority(self):
+        return 10  # 高优先级，方便测试
+
+    def run_impl(self):
+        # 直接调用基类的 get_current_stamina 方法
+        val = self.get_current_stamina()
+        self.logger.info(f"手动检测体力完成: {val}")
+        return True
+
+
+==================================================
+FILE: .\tasks\daily\__init__.py
+==================================================
+
+
+==================================================
+FILE: .\tasks\shop\general_shop.py
+==================================================
+from tasks.base_task import BaseTask
+
+class ShopTask(BaseTask):
+    @property
+    def name(self):
+        return "Shop"
+
+    @property
+    def priority(self):
+        return 90
+
+    def run_impl(self):
+        self.logger.info("Executing Shop Task...")
+        # TODO: Implement logic
+        return True
+
+
+==================================================
+FILE: .\tasks\shop\__init__.py
+==================================================
+
+
+==================================================
+FILE: .\ui\add_instance_dialog.py
+==================================================
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    QLineEdit, QComboBox, QPushButton, QMessageBox, QFormLayout
+)
+from airtest.core.android.adb import ADB
+import os
+
+class AddInstanceDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("添加新实例")
+        self.resize(400, 200)
+        self.setup_ui()
+        self.refresh_devices()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        
+        # 实例名称
+        self.line_name = QLineEdit()
+        self.line_name.setPlaceholderText("例如: 主号, 小号1...")
+        form.addRow("实例名称:", self.line_name)
+
+        # 设备序列号
+        hbox_serial = QHBoxLayout()
+        self.combo_serial = QComboBox()
+        self.combo_serial.setEditable(True)
+        self.combo_serial.setPlaceholderText("选择或输入设备 Serial/IP:Port")
+        
+        btn_refresh = QPushButton("🔄")
+        btn_refresh.setToolTip("刷新设备列表")
+        btn_refresh.setFixedWidth(40)
+        btn_refresh.clicked.connect(self.refresh_devices)
+        
+        hbox_serial.addWidget(self.combo_serial)
+        hbox_serial.addWidget(btn_refresh)
+        form.addRow("设备 Serial:", hbox_serial)
+
+        layout.addLayout(form)
+
+        # 按钮
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("确定")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def refresh_devices(self):
+        self.combo_serial.clear()
+        try:
+            # 1. 获取配置的 ADB 路径
+            from config import global_config
+            adb_path = global_config.get("adb_path", "")
+            use_internal = global_config.get("use_internal_adb", True)
+            
+            # 如果使用内置，尝试构建路径 (这里假设在当前目录下有 adb/adb.exe)
+            if use_internal:
+                # 简单的内置路径推断，实际可能需要更严谨的判断
+                if os.path.exists("adb/adb.exe"):
+                    adb_path = os.path.abspath("adb/adb.exe")
+                else:
+                    # 如果没找到内置的，就让 Airtest 自己去找
+                    adb_path = None
+            
+            # 2. 初始化 ADB
+            if adb_path and os.path.exists(adb_path):
+                adb = ADB(adb_path=adb_path)
+            else:
+                adb = ADB() # 尝试自动查找
+
+            # 3. 获取设备列表
+            devices = adb.devices() # returns list of (serial, status)
+            
+            count = 0
+            for serial, status in devices:
+                if status == 'device':
+                    self.combo_serial.addItem(serial)
+                    count += 1
+            
+            if count == 0:
+                self.combo_serial.setPlaceholderText("未检测到在线设备")
+            else:
+                self.combo_serial.setPlaceholderText("请选择设备...")
+                self.combo_serial.showPopup() # 自动弹出列表方便选择
+
+        except Exception as e:
+            print(f"Error refreshing devices: {e}")
+            QMessageBox.warning(self, "ADB 错误", f"无法获取设备列表:\n{e}")
+
+    def get_data(self):
+        return self.line_name.text().strip(), self.combo_serial.currentText().strip()
+
+
+==================================================
+FILE: .\ui\edit_instance_dialog.py
+==================================================
+# ui/edit_instance_dialog.py
+# -*- coding: utf-8 -*-
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QFormLayout, QLineEdit, 
+    QDialogButtonBox, QMessageBox
+)
+
+class EditInstanceDialog(QDialog):
+    def __init__(self, parent=None, current_name="", current_serial=""):
+        super().__init__(parent)
+        self.setWindowTitle("修改实例信息")
+        self.resize(350, 150)
+        
+        # 记录原始数据
+        self.old_name = current_name
+        self.old_serial = current_serial
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # 表单区域
+        form = QFormLayout()
+        
+        self.line_name = QLineEdit(self.old_name)
+        self.line_name.setPlaceholderText("给它起个新名字")
+        
+        self.line_serial = QLineEdit(self.old_serial)
+        self.line_serial.setPlaceholderText("例如: 127.0.0.1:5555")
+        
+        form.addRow("实例名称:", self.line_name)
+        form.addRow("设备地址:", self.line_serial)
+        
+        layout.addLayout(form)
+
+        # 按钮区域 (确定/取消)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_data(self):
+        """返回修改后的数据"""
+        return self.line_name.text().strip(), self.line_serial.text().strip()
+
+==================================================
+FILE: .\ui\main_window.ui
+==================================================
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>905</width>
+    <height>732</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>KSAS V3.4 - Kingshot Automation System</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QMainWindow {
+	background-color: #81D8D0; /* Tiffany Blue */
+	color: #333333;
+}
+QWidget {
+	font-family: &quot;Segoe UI&quot;, &quot;Microsoft YaHei&quot;;
+	font-size: 10pt;
+    color: #333333;
+}
+QListWidget {
+	background-color: #E0F2F1; /* Lighter Teal/Cyan */
+	border: none;
+	color: #333333;
+	outline: 0;
+}
+QListWidget::item {
+	height: 40px;
+	padding-left: 10px;
+}
+QListWidget::item:selected {
+	background-color: #00897B; /* Darker Teal for selection */
+	color: white;
+}
+QListWidget::item:hover {
+	background-color: #B2DFDB;
+}
+QGroupBox {
+	border: 1px solid #00897B;
+	border-radius: 5px;
+	margin-top: 20px;
+	color: #00695C;
+	font-weight: bold;
+}
+QGroupBox::title {
+	subcontrol-origin: margin;
+	left: 10px;
+	padding: 0 3px 0 3px;
+}
+QPushButton {
+	background-color: #E0F7FA;
+	color: #006064;
+	border: 1px solid #00897B;
+	border-radius: 4px;
+	padding: 5px 15px;
+}
+QPushButton:hover {
+	background-color: #B2DFDB;
+}
+QPushButton:pressed {
+	background-color: #80CBC4;
+}
+QPushButton#btn_toggle_running {
+	background-color: #2e7d32; /* Default Green for Start */
+    color: white;
+	border-color: #1b5e20;
+    font-weight: bold;
+    font-size: 11pt;
+}
+QPushButton#btn_toggle_running:checked {
+    background-color: #c62828; /* Red for Stop */
+    border-color: #b71c1c;
+}
+QPushButton#btn_toggle_running:hover {
+    opacity: 0.9;
+}
+QTabWidget::pane {
+	border: 1px solid #00897B;
+	background-color: #FFFFFF;
+}
+QTabBar::tab {
+	background-color: #E0F2F1;
+	color: #00695C;
+	padding: 8px 20px;
+	border-top-left-radius: 4px;
+	border-top-right-radius: 4px;
+}
+QTabBar::tab:selected {
+	background-color: #FFFFFF;
+	color: #004D40;
+	border-bottom: 2px solid #00897B;
+}
+QTextBrowser {
+	background-color: #E0F2F1; /* Light Tiffany Blue to match theme */
+	color: #004D40;
+	border: 1px solid #00897B;
+	font-family: &quot;Consolas&quot;, &quot;Courier New&quot;;
+}
+QComboBox {
+	background-color: #E0F7FA;
+	color: #006064;
+	border: 1px solid #00897B;
+	padding: 5px;
+}
+QComboBox::drop-down {
+	border: 0px;
+}
+/* 针对三个状态列表的特殊样式 */
+#list_running, #list_queue, #list_waiting {
+    background-color: #FFFFFF; 
+    border: 1px solid #B2DFDB; 
+    border-radius: 4px;
+}
+#list_running::item, #list_queue::item, #list_waiting::item {
+    border-bottom: 1px solid #E0F2F1;
+    height: 30px;
+}
+</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QHBoxLayout" name="horizontalLayout">
+    <property name="spacing">
+     <number>0</number>
+    </property>
+    <property name="leftMargin">
+     <number>0</number>
+    </property>
+    <property name="topMargin">
+     <number>0</number>
+    </property>
+    <property name="rightMargin">
+     <number>0</number>
+    </property>
+    <property name="bottomMargin">
+     <number>0</number>
+    </property>
+    <item>
+     <widget class="QWidget" name="sidebar_container" native="true">
+      <property name="minimumSize">
+       <size>
+        <width>220</width>
+        <height>0</height>
+       </size>
+      </property>
+      <property name="maximumSize">
+       <size>
+        <width>220</width>
+        <height>16777215</height>
+       </size>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">background-color: #B2DFDB; /* Sidebar slightly darker/different shade */</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout">
+       <property name="spacing">
+        <number>10</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>10</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>10</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="label_logo">
+         <property name="minimumSize">
+          <size>
+           <width>0</width>
+           <height>100</height>
+          </size>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">color: #004D40; margin: 10px;</string>
+         </property>
+         <property name="text">
+          <string>LOGO
+(Square)</string>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignmentFlag::AlignCenter</set>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="Line" name="line">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QListWidget" name="list_instances">
+         <property name="selectionMode">
+          <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QWidget" name="sidebar_tools" native="true">
+         <layout class="QVBoxLayout" name="verticalLayout_tools">
+          <property name="leftMargin">
+           <number>10</number>
+          </property>
+          <property name="rightMargin">
+           <number>10</number>
+          </property>
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayout_2">
+            <item>
+             <widget class="QPushButton" name="btn_add_instance">
+              <property name="focusPolicy">
+               <enum>Qt::FocusPolicy::NoFocus</enum>
+              </property>
+              <property name="toolTip">
+               <string>添加新设备</string>
+              </property>
+              <property name="text">
+               <string>➕</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btn_refresh_adb">
+              <property name="focusPolicy">
+               <enum>Qt::FocusPolicy::NoFocus</enum>
+              </property>
+              <property name="toolTip">
+               <string>刷新 ADB 连接</string>
+              </property>
+              <property name="text">
+               <string>🔄</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btn_global_settings">
+              <property name="focusPolicy">
+               <enum>Qt::FocusPolicy::NoFocus</enum>
+              </property>
+              <property name="toolTip">
+               <string>全局设置</string>
+              </property>
+              <property name="text">
+               <string>⚙️</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btn_minimize">
+              <property name="focusPolicy">
+               <enum>Qt::FocusPolicy::NoFocus</enum>
+              </property>
+              <property name="toolTip">
+               <string>最小化到托盘</string>
+              </property>
+              <property name="text">
+               <string>🔽</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QStackedWidget" name="stacked_pages">
+      <property name="currentIndex">
+       <number>1</number>
+      </property>
+      <widget class="QWidget" name="page_welcome">
+       <layout class="QVBoxLayout" name="verticalLayout_2">
+        <item>
+         <spacer name="verticalSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_welcome">
+          <property name="font">
+           <font>
+            <family>Segoe UI</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">color: #004D40;</string>
+          </property>
+          <property name="text">
+           <string>请从左侧选择一个实例，或点击 ➕ 添加新设备</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignmentFlag::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="verticalSpacer_2">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="page_instance_detail">
+       <layout class="QVBoxLayout" name="verticalLayout_3">
+        <item>
+         <widget class="QFrame" name="header_frame">
+          <property name="frameShape">
+           <enum>QFrame::Shape::StyledPanel</enum>
+          </property>
+          <property name="frameShadow">
+           <enum>QFrame::Shadow::Raised</enum>
+          </property>
+          <layout class="QHBoxLayout" name="horizontalLayout_3">
+           <item>
+            <widget class="QLabel" name="label_instance_name">
+             <property name="font">
+              <font>
+               <family>Segoe UI</family>
+               <pointsize>10</pointsize>
+               <bold>true</bold>
+              </font>
+             </property>
+             <property name="text">
+              <string>Instance Name</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_status_icon">
+             <property name="text">
+              <string>🟢</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_status_text">
+             <property name="text">
+              <string>Online - Idle</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QPushButton" name="btn_toggle_running">
+             <property name="minimumSize">
+              <size>
+               <width>120</width>
+               <height>40</height>
+              </size>
+             </property>
+             <property name="focusPolicy">
+              <enum>Qt::FocusPolicy::NoFocus</enum>
+             </property>
+             <property name="text">
+              <string>▶ 启动挂机</string>
+             </property>
+             <property name="checkable">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QTabWidget" name="tabWidget">
+          <property name="focusPolicy">
+           <enum>Qt::FocusPolicy::NoFocus</enum>
+          </property>
+          <property name="currentIndex">
+           <number>1</number>
+          </property>
+          <widget class="QWidget" name="tab_tasks">
+           <attribute name="title">
+            <string>任务配置</string>
+           </attribute>
+           <layout class="QVBoxLayout" name="verticalLayout_4">
+            <item>
+             <widget class="QScrollArea" name="scrollArea">
+              <property name="widgetResizable">
+               <bool>true</bool>
+              </property>
+              <widget class="QWidget" name="scrollAreaWidgetContents">
+               <property name="geometry">
+                <rect>
+                 <x>0</x>
+                 <y>0</y>
+                 <width>645</width>
+                 <height>569</height>
+                </rect>
+               </property>
+               <layout class="QVBoxLayout" name="verticalLayout_tasks">
+                <item>
+                 <spacer name="verticalSpacer_3">
+                  <property name="orientation">
+                   <enum>Qt::Orientation::Vertical</enum>
+                  </property>
+                  <property name="sizeHint" stdset="0">
+                   <size>
+                    <width>20</width>
+                    <height>40</height>
+                   </size>
+                  </property>
+                 </spacer>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+          <widget class="QWidget" name="tab_logs">
+           <attribute name="title">
+            <string>运行总览</string>
+           </attribute>
+           <layout class="QHBoxLayout" name="horizontalLayout_4">
+            <item>
+             <widget class="QWidget" name="widget_status_panel" native="true">
+              <property name="minimumSize">
+               <size>
+                <width>220</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>230</width>
+                <height>16777215</height>
+               </size>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_5">
+               <item>
+                <widget class="QWidget" name="container_running" native="true">
+                 <property name="maximumSize">
+                  <size>
+                   <width>16777215</width>
+                   <height>100</height>
+                  </size>
+                 </property>
+                 <layout class="QVBoxLayout" name="verticalLayout_6">
+                  <property name="spacing">
+                   <number>2</number>
+                  </property>
+                  <property name="leftMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="topMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="rightMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="bottomMargin">
+                   <number>0</number>
+                  </property>
+                  <item>
+                   <widget class="QLabel" name="lbl_running_title">
+                    <property name="styleSheet">
+                     <string notr="true">font-weight: bold; color: #00695C;</string>
+                    </property>
+                    <property name="text">
+                     <string>运行中</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="Line" name="line_2">
+                    <property name="orientation">
+                     <enum>Qt::Orientation::Horizontal</enum>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QListWidget" name="list_running">
+                    <property name="focusPolicy">
+                     <enum>Qt::FocusPolicy::NoFocus</enum>
+                    </property>
+                    <property name="selectionMode">
+                     <enum>QAbstractItemView::SelectionMode::NoSelection</enum>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+               <item>
+                <widget class="QWidget" name="container_queue" native="true">
+                 <property name="maximumSize">
+                  <size>
+                   <width>16777215</width>
+                   <height>180</height>
+                  </size>
+                 </property>
+                 <layout class="QVBoxLayout" name="verticalLayout_7">
+                  <property name="spacing">
+                   <number>2</number>
+                  </property>
+                  <property name="leftMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="topMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="rightMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="bottomMargin">
+                   <number>0</number>
+                  </property>
+                  <item>
+                   <widget class="QLabel" name="lbl_queue_title">
+                    <property name="styleSheet">
+                     <string notr="true">font-weight: bold; color: #00695C;</string>
+                    </property>
+                    <property name="text">
+                     <string>队列中</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="Line" name="line_3">
+                    <property name="orientation">
+                     <enum>Qt::Orientation::Horizontal</enum>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QListWidget" name="list_queue">
+                    <property name="focusPolicy">
+                     <enum>Qt::FocusPolicy::NoFocus</enum>
+                    </property>
+                    <property name="selectionMode">
+                     <enum>QAbstractItemView::SelectionMode::NoSelection</enum>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+               <item>
+                <widget class="QWidget" name="container_waiting" native="true">
+                 <layout class="QVBoxLayout" name="verticalLayout_8">
+                  <property name="spacing">
+                   <number>2</number>
+                  </property>
+                  <property name="leftMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="topMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="rightMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="bottomMargin">
+                   <number>0</number>
+                  </property>
+                  <item>
+                   <widget class="QLabel" name="lbl_waiting_title">
+                    <property name="styleSheet">
+                     <string notr="true">font-weight: bold; color: #00695C;</string>
+                    </property>
+                    <property name="text">
+                     <string>等待中</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="Line" name="line_4">
+                    <property name="orientation">
+                     <enum>Qt::Orientation::Horizontal</enum>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QListWidget" name="list_waiting">
+                    <property name="focusPolicy">
+                     <enum>Qt::FocusPolicy::NoFocus</enum>
+                    </property>
+                    <property name="selectionMode">
+                     <enum>QAbstractItemView::SelectionMode::NoSelection</enum>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
+             <widget class="QTextBrowser" name="text_log">
+              <property name="html">
+               <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;meta charset=&quot;utf-8&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+hr { height: 1px; border-width: 0; }
+li.unchecked::marker { content: &quot;\2610&quot;; }
+li.checked::marker { content: &quot;\2612&quot;; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Consolas','Courier New'; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Consolas'; color:#888888;&quot;&gt;[12:00:00] System initialized.&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Consolas'; color:#00897b;&quot;&gt;[12:00:01] Connected to device.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+          <widget class="QWidget" name="tab_stats">
+           <attribute name="title">
+            <string>统计与状态</string>
+           </attribute>
+           <layout class="QVBoxLayout" name="verticalLayout_stats">
+            <item>
+             <widget class="QGroupBox" name="group_stamina">
+              <property name="title">
+               <string>领主体力</string>
+              </property>
+              <layout class="QHBoxLayout" name="horizontalLayout_stamina">
+               <item>
+                <widget class="QProgressBar" name="progress_stamina">
+                 <property name="maximum">
+                  <number>200</number>
+                 </property>
+                 <property name="value">
+                  <number>0</number>
+                 </property>
+                 <property name="format">
+                  <string>%v</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QLabel" name="label_stamina_val">
+                 <property name="styleSheet">
+                  <string notr="true">font-weight: bold; color: #00695C;</string>
+                 </property>
+                 <property name="text">
+                  <string>0</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
+             <widget class="QGroupBox" name="group_resources">
+              <property name="title">
+               <string>基础资源</string>
+              </property>
+              <layout class="QGridLayout" name="gridLayout_resources">
+               <item row="0" column="0">
+                <widget class="QLabel" name="lbl_icon_food">
+                 <property name="text">
+                  <string>🍞 面包</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="1">
+                <widget class="QLabel" name="val_food">
+                 <property name="text">
+                  <string>0</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="2">
+                <widget class="QLabel" name="lbl_icon_wood">
+                 <property name="text">
+                  <string>🌲 木头</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="3">
+                <widget class="QLabel" name="val_wood">
+                 <property name="text">
+                  <string>0</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QLabel" name="lbl_icon_stone">
+                 <property name="text">
+                  <string>⛰️ 石头</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QLabel" name="val_stone">
+                 <property name="text">
+                  <string>0</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="2">
+                <widget class="QLabel" name="lbl_icon_iron">
+                 <property name="text">
+                  <string>⛏️ 铁矿</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="3">
+                <widget class="QLabel" name="val_iron">
+                 <property name="text">
+                  <string>0</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
+             <spacer name="verticalSpacer_stats">
+              <property name="orientation">
+               <enum>Qt::Orientation::Vertical</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>40</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+           </layout>
+          </widget>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
+
+==================================================
+FILE: .\ui\main_window_logic.py
+==================================================
+# -*- coding: utf-8 -*-
+import sys
+import os
+from datetime import datetime
+from PySide6.QtWidgets import (
+    QMainWindow, QListWidgetItem, QMessageBox, QWidget, 
+    QSystemTrayIcon, QMenu, QStyle
+)
+from PySide6.QtCore import QTimer, Slot, Signal, QFile, QIODevice, QObject, Qt, QEvent
+from PySide6.QtUiTools import QUiLoader
+from PySide6.QtGui import QPixmap, QColor, QIcon, QAction, QCursor
+
+from instance_manager import InstanceManager
+from task_registry import get_all_tasks
+from ui.task_widgets import TaskWidgetFactory
+from ui.settings_dialog import SettingsDialog
+from ui.add_instance_dialog import AddInstanceDialog
+from ui.edit_instance_dialog import EditInstanceDialog
+from config import global_config
+from i18n import i18n
+
+class MainWindowLogic(QObject):
+    def __init__(self):
+        super().__init__()
+        
+        # 1. 加载 UI
+        self.ui = self.load_ui_file()
+        
+        # 2. 初始化核心组件
+        self.manager = InstanceManager()
+        self.current_instance_id = None
+        self.config_widgets = [] 
+        
+        # 连接管理器信号
+        self.manager.sig_instance_list_changed.connect(self.refresh_instances)
+        
+        # 3. 初始化托盘图标
+        self.init_system_tray()
+
+        # 4. 连接信号
+        self.ui.list_instances.itemClicked.connect(self.on_instance_selected)
+        self.ui.btn_add_instance.clicked.connect(self.on_add_instance)
+        self.ui.btn_refresh_adb.clicked.connect(self.on_refresh_adb)
+        self.ui.btn_toggle_running.clicked.connect(self.on_toggle_running)
+        self.ui.btn_global_settings.clicked.connect(self.on_global_settings)
+        self.ui.btn_minimize.clicked.connect(self.minimize_to_tray)
+        
+        # 5. 初始化右键菜单 (新增)
+        self.setup_list_context_menus()
+        self.setup_sidebar_context_menu()
+        
+        # 6. 初始化界面
+        self.refresh_instances()
+        self.ui.stacked_pages.setCurrentWidget(self.ui.page_welcome)
+        
+        # 7. 启动定时器刷新状态
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_ui_status)
+        self.status_timer.start(1000) # 每秒刷新一次
+
+        # 8. 安装事件过滤器
+        self.ui.installEventFilter(self)
+
+    def show(self):
+        """显示主窗口"""
+        self.ui.show()
+
+    def minimize_to_tray(self):
+        """最小化到托盘"""
+        self.ui.hide()
+        self.tray_icon.showMessage(
+            "KSAS 已隐藏",
+            "程序仍在后台运行，点击托盘图标可恢复。",
+            QSystemTrayIcon.Information,
+            2000
+        )
+
+    def load_ui_file(self):
+        loader = QUiLoader()
+        ui_path = os.path.join(os.path.dirname(__file__), "main_window.ui")
+        ui_file = QFile(ui_path)
+        if not ui_file.open(QIODevice.ReadOnly):
+            print(f"Cannot open {ui_path}: {ui_file.errorString()}")
+            sys.exit(-1)
+        ui = loader.load(ui_file)
+        ui_file.close()
+        if not ui:
+            print(loader.errorString())
+            sys.exit(-1)
+        return ui
+
+    def init_system_tray(self):
+        """初始化系统托盘 & 设置应用图标"""
+        self.tray_icon = QSystemTrayIcon(self.ui)
+        
+        # 尝试加载 Logo
+        icon_path = os.path.join("assets", "logo.png")
+        if os.path.exists(icon_path):
+            icon = QIcon(icon_path)
+            self.tray_icon.setIcon(icon)
+            self.ui.setWindowIcon(icon)
+            
+            # 设置侧边栏 Logo
+            if hasattr(self.ui, 'label_logo'):
+                pixmap = QPixmap(icon_path)
+                self.ui.label_logo.setPixmap(pixmap.scaled(
+                    self.ui.label_logo.size(), 
+                    Qt.KeepAspectRatio, 
+                    Qt.SmoothTransformation
+                ))
+                self.ui.label_logo.setText("") # 清除文字
+        else:
+            # Fallback: 使用标准图标
+            self.tray_icon.setIcon(self.ui.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+
+        # 托盘菜单
+        tray_menu = QMenu()
+        
+        action_show = QAction("显示主界面", self.ui)
+        action_show.triggered.connect(self.show_window)
+        tray_menu.addAction(action_show)
+        
+        action_quit = QAction("退出程序", self.ui)
+        action_quit.triggered.connect(self.quit_app)
+        tray_menu.addAction(action_quit)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        self.tray_icon.show()
+
+    def eventFilter(self, obj, event):
+        """事件过滤器：拦截主窗口关闭事件"""
+        if obj == self.ui and event.type() == QEvent.Close:
+            # 只有在配置开启时才最小化到托盘
+            if global_config.get("close_to_tray", False):
+                event.ignore()
+                self.ui.hide()
+                self.tray_icon.showMessage(
+                    "KSAS 已隐藏",
+                    "程序仍在后台运行，点击托盘图标可恢复。",
+                    QSystemTrayIcon.Information,
+                    2000
+                )
+                return True # 事件已处理
+            else:
+                # 正常关闭退出
+                self.quit_app()
+                return False
+        return super().eventFilter(obj, event)
+
+    def show_window(self):
+        self.ui.showNormal()
+        self.ui.activateWindow()
+
+    def quit_app(self):
+        self.tray_icon.hide()
+        sys.exit(0)
+
+    def on_tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            if self.ui.isVisible():
+                self.ui.hide()
+            else:
+                self.show_window()
+
+    def refresh_instances(self):
+        self.ui.list_instances.clear()
+        instances = self.manager.get_all_instances()
+        for inst in instances:
+            item = QListWidgetItem()
+            name = inst.get('alias') or inst.get('id')
+            item.setText(name)
+            item.setData(Qt.UserRole, inst['id'])
+            self.ui.list_instances.addItem(item)
+
+    def on_instance_selected(self, item):
+        instance_id = item.data(Qt.UserRole)
+        
+        # 如果切换了实例，断开旧的信号连接（简单处理：这里暂不处理断连，直接连新的）
+        # 实际项目中可能需要更严谨的信号管理
+        
+        self.current_instance_id = instance_id
+        self.ui.stacked_pages.setCurrentWidget(self.ui.page_instance_detail)
+        
+        # 更新标题
+        all_insts = self.manager.get_all_instances()
+        target = next((x for x in all_insts if x['id'] == instance_id), None)
+        if target:
+            self.ui.label_instance_name.setText(target.get('alias', instance_id))
+            
+        # 加载任务配置卡片
+        self.load_task_configs(instance_id)
+        
+        # 连接日志信号
+        store = self.manager.get_store(instance_id)
+        # 先断开防止重复连接
+        try: store.sig_log_msg.disconnect()
+        except: pass
+        store.sig_log_msg.connect(self.append_log)
+        
+        # 清空并加载现有日志 (这里可以做成读取 runtime.log 文件)
+        self.ui.text_log.clear()
+        log_path = os.path.join("data", instance_id, "log", "ksas.log") # 注意 logging_setup 里配的文件名
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    # 只读最后 100 行，防止太卡
+                    lines = f.readlines()[-100:]
+                    for line in lines:
+                        self.ui.text_log.append(f"<span style='color:gray'>{line.strip()}</span>")
+            except Exception as e:
+                print(f"读取日志失败: {e}")
+        self.update_ui_status()
+
+    def append_log(self, level, msg):
+        try:
+            # 拆分 ID 和 内容
+            if "|||" in full_msg:
+                sender_id, real_msg = full_msg.split("|||", 1)
+            else:
+                sender_id = "System"
+                real_msg = full_msg
+                
+            # 🛑 关键判断：只有当消息来源 == 当前选中的实例，才显示！
+            if sender_id != self.current_instance_id:
+                return
+                
+            color = "black"
+            # ... (颜色逻辑不变) ...
+            
+            time_str = datetime.now().strftime("%H:%M:%S")
+            html = f'<span style="color:gray">[{time_str}]</span> <span style="color:{color}">{real_msg}</span>'
+            self.ui.text_log.append(html)
+            
+        except Exception:
+            pass
+
+    def load_task_configs(self, instance_id):
+        layout = self.ui.scrollAreaWidgetContents.layout()
+        # 清空旧布局
+        while layout.count():
+            child = layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.config_widgets = []
+        
+        store = self.manager.get_store(instance_id)
+        task_classes = get_all_tasks()
+        
+        # 动态生成任务卡片
+        for task_cls in task_classes:
+            widget = TaskWidgetFactory.create_widget(task_cls)
+            widget.load_from_store(store)
+            layout.addWidget(widget)
+            self.config_widgets.append(widget)
+            
+        layout.addStretch()
+
+    def save_current_configs(self):
+        if not self.current_instance_id:
+            return
+        store = self.manager.get_store(self.current_instance_id)
+        for widget in self.config_widgets:
+            widget.save_to_store(store)
+
+    def on_toggle_running(self):
+        if not self.current_instance_id:
+            return
+        self.save_current_configs()
+        
+        sched = self.manager.get_scheduler(self.current_instance_id)
+        if not sched:
+            return
+
+        if self.ui.btn_toggle_running.isChecked():
+            sched.start_scheduler()
+            self.ui.text_log.append(f"<font color='green'><b>>>> 调度器已启动 (Scheduler Started)</b></font>")
+        else:
+            sched.stop_scheduler()
+            self.ui.text_log.append(f"<font color='red'><b>>>> 调度器正在停止...</b></font>")
+        self.update_ui_status()
+
+    def update_ui_status(self):
+        """每秒刷新的核心循环"""
+        if not self.current_instance_id:
+            return
+        
+        # 1. 更新按钮状态
+        sched = self.manager.get_scheduler(self.current_instance_id)
+        if not sched: return
+        
+        is_running = sched.isRunning()
+        
+        # 防止按钮状态不同步
+        if self.ui.btn_toggle_running.isChecked() != is_running:
+            self.ui.btn_toggle_running.setChecked(is_running)
+            
+        if is_running:
+            self.ui.btn_toggle_running.setText("⏹ 停止挂机")
+            self.ui.btn_toggle_running.setProperty("state", "running")
+            self.ui.label_status_text.setText("Running")
+            self.ui.label_status_icon.setText("🟢")
+        else:
+            self.ui.btn_toggle_running.setText("▶ 启动挂机")
+            self.ui.btn_toggle_running.setProperty("state", "stopped")
+            self.ui.label_status_text.setText("Idle")
+            self.ui.label_status_icon.setText("⚪")
+        
+        # 强制刷新 QSS 样式
+        self.ui.btn_toggle_running.style().unpolish(self.ui.btn_toggle_running)
+        self.ui.btn_toggle_running.style().polish(self.ui.btn_toggle_running)
+
+        # 2. 更新资源栏
+        store = self.manager.get_store(self.current_instance_id)
+        stamina = store.get_stat("stamina", 0)
+        self.ui.progress_stamina.setMaximum(200)
+        self.ui.progress_stamina.setValue(int(stamina))
+        self.ui.progress_stamina.setTextVisible(False) 
+        self.ui.label_stamina_val.setText(f"{stamina} / 200")
+        
+        resources = store.get_stat("resources", {})
+        self.ui.val_food.setText(self._format_number(resources.get("food", 0)))
+        self.ui.val_wood.setText(self._format_number(resources.get("wood", 0)))
+        self.ui.val_stone.setText(self._format_number(resources.get("stone", 0)))
+        self.ui.val_iron.setText(self._format_number(resources.get("iron", 0)))
+
+        # 3. 更新任务列表 (Running / Queue / Waiting)
+        self.update_task_lists(sched)
+
+    def update_task_lists(self, sched):
+        """根据调度器状态刷新中间的三个列表"""
+        self.ui.list_running.clear()
+        self.ui.list_queue.clear()
+        self.ui.list_waiting.clear()
+        
+        if not sched: return
+
+        store = self.manager.get_store(self.current_instance_id)
+        
+        # 获取当前正在运行的任务名
+        current_task_name = store.get_runtime("current_task", "Idle")
+        is_running_logic = store.get_runtime("is_running", False)
+
+        # --- 填充 "运行中" ---
+        if is_running_logic and "休眠" not in current_task_name and "待机" not in current_task_name and "Idle" not in current_task_name:
+             self.ui.list_running.addItem(f"🔥 {current_task_name}")
+        elif is_running_logic:
+             self.ui.list_running.addItem(f"💤 {current_task_name}")
+        
+        # --- 准备数据 ---
+        now = datetime.now()
+        queue_tasks = []   # 时间到了
+        waiting_tasks = [] # 时间没到
+
+        for task in sched.tasks:
+            if not task.enabled:
+                continue
+            
+            # 格式化时间
+            time_str = task.next_run.strftime("%H:%M:%S") if task.next_run.year > 2000 else "立即"
+            
+            # 已经在运行的就不显示在队列里了
+            if task.name == current_task_name and "休眠" not in current_task_name:
+                continue
+
+            if now >= task.next_run:
+                queue_tasks.append((task, time_str))
+            else:
+                waiting_tasks.append((task, time_str))
+
+        # --- 填充 "队列中" (按优先级排序) ---
+        # priority 越小越优先
+        queue_tasks.sort(key=lambda x: x[0].priority)
+        for task, t_str in queue_tasks:
+            item = QListWidgetItem(f"[{task.priority}] {task.name}")
+            item.setData(Qt.UserRole, task.name) # 存任务名方便右键操作
+            self.ui.list_queue.addItem(item)
+
+        # --- 填充 "等待中" (按时间排序) ---
+        waiting_tasks.sort(key=lambda x: x[0].next_run)
+        for task, t_str in waiting_tasks:
+            item = QListWidgetItem(f"{task.name}  ({t_str})")
+            item.setData(Qt.UserRole, task.name)
+            self.ui.list_waiting.addItem(item)
+
+    # ===========================================
+    # 🖱️ 右键菜单逻辑 (Context Menu)
+    # ===========================================
+    def setup_list_context_menus(self):
+        """设置列表的右键菜单策略"""
+        for lst in [self.ui.list_queue, self.ui.list_waiting]:
+            lst.setContextMenuPolicy(Qt.CustomContextMenu)
+            lst.customContextMenuRequested.connect(self.on_task_context_menu)
+
+    def on_task_context_menu(self, pos):
+        """处理右键点击"""
+        sender_list = self.sender() # 获取是哪个列表发出的信号
+        item = sender_list.itemAt(pos)
+        
+        if not item: return
+        
+        task_name = item.data(Qt.UserRole)
+        
+        menu = QMenu()
+        action_run = QAction(f"🚀 立即执行 {task_name}", self.ui)
+        action_run.triggered.connect(lambda: self.reset_task_next_run(task_name))
+        menu.addAction(action_run)
+        
+        menu.exec(QCursor.pos())
+
+    def reset_task_next_run(self, task_name):
+        """重置任务时间 -> 立即执行"""
+        if not self.current_instance_id: return
+        
+        store = self.manager.get_store(self.current_instance_id)
+        # 清空 next_run，调度器会认为是公元1年，从而立即执行
+        store.set_stat(f"tasks.{task_name}.next_run", "")
+        
+        self.ui.text_log.append(f"<font color='#1e90ff'>[User] 已强制插队任务: {task_name}</font>")
+    
+    def setup_sidebar_context_menu(self):
+        """设置左侧实例列表的右键菜单"""
+        self.ui.list_instances.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.ui.list_instances.customContextMenuRequested.connect(self.on_sidebar_menu)
+
+    def on_sidebar_menu(self, pos):
+        item = self.ui.list_instances.itemAt(pos)
+        if not item: return
+        
+        instance_id = item.data(Qt.UserRole)
+        
+        # 创建菜单
+        menu = QMenu()
+        
+        # ✏️ 修改地址
+        action_edit = QAction("✏️ 编辑实例信息 (Edit Info)", self.ui)
+        action_edit.triggered.connect(lambda: self.do_edit_instance(instance_id)) 
+        menu.addAction(action_edit)
+
+        # 📂 打开文件夹
+        action_folder = QAction("📂 打开数据目录 (Open Folder)", self.ui)
+        action_folder.triggered.connect(lambda: self.do_open_folder(instance_id))
+        menu.addAction(action_folder)
+        
+        menu.addSeparator()
+        
+        # 🗑️ 删除实例
+        action_del = QAction("🗑️ 删除实例 (Delete)", self.ui)
+        # 红色字体警示
+        # action_del.setStyleSheet("color: red;") # Qt Menu styleSheet 有点难搞，先不管颜色
+        action_del.triggered.connect(lambda: self.do_delete_instance(instance_id))
+        menu.addAction(action_del)
+        
+        menu.exec(QCursor.pos())
+
+    def do_edit_instance(self, instance_id):
+        """弹出对话框修改 Name 和 Serial"""
+        
+        # 1. 获取旧数据，用来填在框里
+        store = self.manager.get_store(instance_id)
+        # 从注册表里拿现在的名字（别名）
+        all_insts = self.manager.get_all_instances()
+        target = next((x for x in all_insts if x['id'] == instance_id), None)
+        
+        old_name = target['name'] if target else instance_id
+        old_serial = store.get_cfg("meta.serial", "")
+        
+        # 2. 弹出对话框
+        dialog = EditInstanceDialog(self.ui, current_name=old_name, current_serial=old_serial)
+        
+        if dialog.exec():
+            new_name, new_serial = dialog.get_data()
+            
+            # 简单校验
+            if not new_name or not new_serial:
+                QMessageBox.warning(self.ui, "无效输入", "名称和地址不能为空！")
+                return
+
+            # 3. 调用 Manager 更新
+            # (注意：instance_manager.py 里的 update_instance 方法要确保已存在)
+            self.manager.update_instance(instance_id, new_serial=new_serial, new_alias=new_name)
+            
+            self.ui.text_log.append(f"<font color='blue'>[System] 实例信息已更新: {new_name} ({new_serial})</font>")
+
+    def do_delete_instance(self, instance_id):
+        """删除实例确认"""
+        # 获取名字用于提示
+        all_insts = self.manager.get_all_instances()
+        target = next((x for x in all_insts if x['id'] == instance_id), None)
+        name = target['name'] if target else instance_id
+
+        reply = QMessageBox.question(
+            self.ui, 
+            "确认删除", 
+            f"确定要删除实例 [{name}] 吗？\n\n"
+            "• 配置文件将被移除\n"
+            "• 统计数据将被清空\n"
+            "• 此操作不可恢复！",
+            QMessageBox.Yes | QMessageBox.No, 
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # 如果正在运行，先停止
+            sched = self.manager.get_scheduler(instance_id)
+            if sched and sched.isRunning():
+                sched.stop_scheduler()
+                
+            self.manager.delete_instance(instance_id)
+            
+            # 如果删的是当前选中的，清空右侧
+            if self.current_instance_id == instance_id:
+                self.current_instance_id = None
+                self.ui.stacked_pages.setCurrentIndex(0) # 回到欢迎页
+            
+            QMessageBox.information(self.ui, "提示", "删除成功")
+
+    def do_open_folder(self, instance_id):
+        """打开该实例的文件夹"""
+        store = self.manager.get_store(instance_id)
+        if store:
+            path = os.path.abspath(store.base_dir)
+            os.startfile(path)
+
+    # ===========================================
+    # 🔢 数字格式化
+    # ===========================================
+    def _format_number(self, num):
+        try:
+            n = float(num)
+        except (ValueError, TypeError):
+            return "0"
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f}M"
+        elif n >= 1_000:
+            return f"{n/1_000:.1f}K"
+        else:
+            return str(int(n))
+
+    def on_add_instance(self):
+        dialog = AddInstanceDialog(self.ui)
+        if dialog.exec():
+            name, serial = dialog.get_data()
+            if not name or not serial:
+                QMessageBox.warning(self.ui, "错误", "名称和 Serial 不能为空！")
+                return
+            
+            success, msg = self.manager.create_instance(name, serial)
+            if success:
+                QMessageBox.information(self.ui, "成功", f"实例 '{name}' 创建成功！")
+            else:
+                QMessageBox.critical(self.ui, "失败", f"创建失败: {msg}")
+
+    def on_refresh_adb(self):
+        """刷新实例列表"""
+        self.refresh_instances()
+        self.ui.statusbar.showMessage("实例列表已刷新", 2000)
+
+    def on_global_settings(self):
+        dialog = SettingsDialog(self.ui)
+        dialog.exec()
+
+==================================================
+FILE: .\ui\settings_dialog.py
+==================================================
+# -*- coding: utf-8 -*-
+import os
+import sys
+import shutil
+import zipfile
+import subprocess
+from datetime import datetime
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, 
+    QLabel, QCheckBox, QComboBox, QLineEdit, QPushButton, 
+    QFileDialog, QMessageBox, QGroupBox, QFormLayout
+)
+from PySide6.QtCore import Qt, Signal
+from config import global_config
+
+class SettingsDialog(QDialog):
+    sig_config_changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("全局设置")
+        self.resize(500, 400)
+        self.setup_ui()
+        self.load_settings()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        # Tab 1: 通用设置
+        self.tab_general = QWidget()
+        self.setup_general_tab()
+        self.tabs.addTab(self.tab_general, "通用")
+
+        # Tab 2: ADB 设置
+        self.tab_adb = QWidget()
+        self.setup_adb_tab()
+        self.tabs.addTab(self.tab_adb, "ADB")
+
+        # Tab 3: 数据管理
+        self.tab_data = QWidget()
+        self.setup_data_tab()
+        self.tabs.addTab(self.tab_data, "数据管理")
+
+        # 底部按钮
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("保存")
+        btn_save.clicked.connect(self.save_settings)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_save)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def setup_general_tab(self):
+        layout = QVBoxLayout(self.tab_general)
+        
+        # 语言
+        group_lang = QGroupBox("语言 / Language")
+        form_lang = QFormLayout()
+        self.combo_lang = QComboBox()
+        self.combo_lang.addItems(["简体中文 (zh_CN)", "English (en_US)"])
+        form_lang.addRow("界面语言:", self.combo_lang)
+        group_lang.setLayout(form_lang)
+        layout.addWidget(group_lang)
+
+        # 行为
+        group_behavior = QGroupBox("行为设置")
+        vbox = QVBoxLayout()
+        self.chk_close_tray = QCheckBox("关闭窗口时最小化到托盘")
+        self.chk_auto_connect = QCheckBox("启动时自动连接上次设备")
+        vbox.addWidget(self.chk_close_tray)
+        vbox.addWidget(self.chk_auto_connect)
+        group_behavior.setLayout(vbox)
+        layout.addWidget(group_behavior)
+
+        layout.addStretch()
+
+    def setup_adb_tab(self):
+        layout = QVBoxLayout(self.tab_adb)
+
+        group_path = QGroupBox("ADB 路径")
+        vbox = QVBoxLayout()
+        
+        self.chk_internal_adb = QCheckBox("使用内置 ADB (推荐)")
+        self.chk_internal_adb.toggled.connect(self.on_internal_adb_toggled)
+        vbox.addWidget(self.chk_internal_adb)
+
+        hbox = QHBoxLayout()
+        self.line_adb_path = QLineEdit()
+        self.line_adb_path.setPlaceholderText("选择 adb.exe 路径...")
+        btn_browse = QPushButton("浏览...")
+        btn_browse.clicked.connect(self.browse_adb)
+        hbox.addWidget(self.line_adb_path)
+        hbox.addWidget(btn_browse)
+        vbox.addLayout(hbox)
+        
+        group_path.setLayout(vbox)
+        layout.addWidget(group_path)
+
+        # 工具
+        group_tools = QGroupBox("ADB 工具")
+        hbox_tools = QHBoxLayout()
+        btn_restart_adb = QPushButton("重启 ADB 服务")
+        btn_restart_adb.clicked.connect(self.restart_adb_server)
+        hbox_tools.addWidget(btn_restart_adb)
+        group_tools.setLayout(hbox_tools)
+        layout.addWidget(group_tools)
+
+        layout.addStretch()
+
+    def setup_data_tab(self):
+        layout = QVBoxLayout(self.tab_data)
+
+        group_backup = QGroupBox("备份与还原")
+        vbox = QVBoxLayout()
+        
+        btn_backup = QPushButton("📦 一键备份所有数据 (Backup)")
+        btn_backup.clicked.connect(self.backup_data)
+        
+        btn_restore = QPushButton("♻️ 从备份还原数据 (Restore)")
+        btn_restore.clicked.connect(self.restore_data)
+
+        vbox.addWidget(btn_backup)
+        vbox.addWidget(btn_restore)
+        group_backup.setLayout(vbox)
+        layout.addWidget(group_backup)
+
+        group_explore = QGroupBox("文件浏览")
+        hbox = QHBoxLayout()
+        btn_open_data = QPushButton("📂 打开 Data 文件夹")
+        btn_open_data.clicked.connect(lambda: self.open_folder("data"))
+        hbox.addWidget(btn_open_data)
+        group_explore.setLayout(hbox)
+        layout.addWidget(group_explore)
+
+        layout.addStretch()
+
+    # ================= Logic =================
+
+    def load_settings(self):
+        # Language
+        lang = global_config.get("language", "zh_CN")
+        idx = 0 if lang == "zh_CN" else 1
+        self.combo_lang.setCurrentIndex(idx)
+
+        # Behavior
+        self.chk_close_tray.setChecked(global_config.get("close_to_tray", True))
+        self.chk_auto_connect.setChecked(global_config.get("auto_connect", True))
+
+        # ADB
+        use_internal = global_config.get("use_internal_adb", True)
+        self.chk_internal_adb.setChecked(use_internal)
+        self.line_adb_path.setText(global_config.get("adb_path", ""))
+        self.line_adb_path.setEnabled(not use_internal)
+
+    def save_settings(self):
+        # Language
+        lang = "zh_CN" if self.combo_lang.currentIndex() == 0 else "en_US"
+        global_config.set("language", lang)
+
+        # Behavior
+        global_config.set("close_to_tray", self.chk_close_tray.isChecked())
+        global_config.set("auto_connect", self.chk_auto_connect.isChecked())
+
+        # ADB
+        global_config.set("use_internal_adb", self.chk_internal_adb.isChecked())
+        global_config.set("adb_path", self.line_adb_path.text().strip())
+
+        global_config.save()
+        self.sig_config_changed.emit()
+        self.accept()
+
+    def on_internal_adb_toggled(self, checked):
+        self.line_adb_path.setEnabled(not checked)
+
+    def browse_adb(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择 ADB", "", "Executable (*.exe);;All Files (*)")
+        if path:
+            self.line_adb_path.setText(path)
+
+    def restart_adb_server(self):
+        try:
+            subprocess.run(["adb", "kill-server"], check=False)
+            subprocess.run(["adb", "start-server"], check=False)
+            QMessageBox.information(self, "成功", "ADB 服务已重启")
+        except Exception as e:
+            QMessageBox.warning(self, "失败", f"重启 ADB 失败: {e}")
+
+    def backup_data(self):
+        try:
+            # 确保 backup 文件夹存在
+            backup_dir = "backup"
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = os.path.join(backup_dir, f"backup_{timestamp}.zip")
+            
+            with zipfile.ZipFile(filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                if os.path.exists("data"):
+                    for root, dirs, files in os.walk("data"):
+                        for file in files:
+                            # 排除截图文件夹，太大了
+                            if "snapshots" in root:
+                                continue
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, ".")
+                            zipf.write(file_path, arcname)
+            
+            QMessageBox.information(self, "备份成功", f"已创建备份文件:\n{os.path.abspath(filename)}")
+        except Exception as e:
+            QMessageBox.critical(self, "备份失败", str(e))
+
+    def restore_data(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择备份文件", "", "Zip Files (*.zip)")
+        if not path:
+            return
+
+        reply = QMessageBox.question(
+            self, "确认还原", 
+            "还原操作将覆盖当前的配置文件，确定要继续吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            try:
+                with zipfile.ZipFile(path, 'r') as zipf:
+                    zipf.extractall(".")
+                QMessageBox.information(self, "还原成功", "数据已还原，请重启程序以生效。")
+            except Exception as e:
+                QMessageBox.critical(self, "还原失败", str(e))
+
+    def open_folder(self, folder):
+        path = os.path.abspath(folder)
+        if not os.path.exists(path):
+            os.makedirs(path)
+        os.startfile(path)
+
+
+==================================================
+FILE: .\ui\task_widgets.py
+==================================================
+# -*- coding: utf-8 -*-
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QCheckBox, QLabel, QSpinBox, QGroupBox, QFormLayout
+from PySide6.QtCore import Qt
+
+class BaseTaskConfigWidget(QGroupBox):
+    """
+    所有任务配置小部件的基类。
+    自动处理 "启用/禁用" (GroupBox 的 checkable 属性)。
+    """
+    def __init__(self, task_class, parent=None):
+        super().__init__(parent)
+        self.task_class = task_class
+
+
+
+        
+        if task_class.__name__ == "GeneralSettings":
+            self.task_name = "General"
+        else:
+            self.task_name = task_class.__name__
+        
+        # 设置 GroupBox 标题和开关
+        self.setTitle(self.task_name)
+        self.setCheckable(True)
+        self.setChecked(False) # 默认关闭
+        
+        # 内部布局
+        self.layout = QVBoxLayout(self)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """
+        【子类重写】在 self.layout 里添加具体的控件
+        """
+        pass
+        
+    def load_from_store(self, store):
+        """
+        从 DataStore 读取配置并刷新 UI
+        """
+        # 1. 读取通用开关
+        # Key 格式: modules.exampletask.enable
+        enabled = store.get_cfg(f"modules.{self.task_name.lower()}.enable", False)
+        self.setChecked(enabled)
+        
+        # 2. 读取子类特定配置
+        self.load_specific_config(store)
+        
+    def save_to_store(self, store):
+        """
+        将 UI 当前状态保存到 DataStore
+        """
+        # 1. 保存通用开关
+        store.set_cfg(f"modules.{self.task_name.lower()}.enable", self.isChecked())
+        
+        # 2. 保存子类特定配置
+        self.save_specific_config(store)
+
+    def load_specific_config(self, store):
+        """【子类重写】读取特定参数"""
+        pass
+
+    def save_specific_config(self, store):
+        """【子类重写】保存特定参数"""
+        pass
+
+# ========================================================
+# 👇 在这里实现各个任务的具体配置卡片
+# ========================================================
+
+class ExampleTaskConfigWidget(BaseTaskConfigWidget):
+    def setup_ui(self):
+        form = QFormLayout()
+        
+        self.spin_interval = QSpinBox()
+        self.spin_interval.setRange(60, 86400)
+        self.spin_interval.setSuffix(" 秒")
+        self.spin_interval.setValue(3600)
+        
+        form.addRow("运行间隔:", self.spin_interval)
+        self.layout.addLayout(form)
+        
+        lbl = QLabel("这是一个示例任务，没什么好配置的。")
+        lbl.setStyleSheet("color: #666666; font-style: italic;")
+        self.layout.addWidget(lbl)
+
+    def load_specific_config(self, store):
+        val = store.get_cfg(f"modules.{self.task_name.lower()}.interval", 3600)
+        self.spin_interval.setValue(int(val))
+
+    def save_specific_config(self, store):
+        store.set_cfg(f"modules.{self.task_name.lower()}.interval", self.spin_interval.value())
+
+# ========================================================
+# 🏭 工厂类
+# ========================================================
+
+class TaskWidgetFactory:
+    @staticmethod
+    def create_widget(task_class):
+        name = task_class.__name__
+        
+        if name == "ExampleTask":
+            return ExampleTaskConfigWidget(task_class)
+        
+        # 如果以后有了 WolfTask:
+        # if name == "WolfTask":
+        #     return WolfTaskConfigWidget(task_class)
+            
+        # 默认返回基类（只有一个开关）
+        return BaseTaskConfigWidget(task_class)
+
+
+==================================================
+FILE: .\ui\ui_main_window.py
+==================================================
+# -*- coding: utf-8 -*-
+
+################################################################################
+## Form generated from reading UI file 'main_window.ui'
+##
+## Created by: Qt User Interface Compiler version 6.10.0
+##
+## WARNING! All changes made in this file will be lost when recompiling UI file!
+################################################################################
+
+from PySide6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
+    QMetaObject, QObject, QPoint, QRect,
+    QSize, QTime, QUrl, Qt)
+from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
+    QFont, QFontDatabase, QGradient, QIcon,
+    QImage, QKeySequence, QLinearGradient, QPainter,
+    QPalette, QPixmap, QRadialGradient, QTransform)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFrame, QHBoxLayout,
+    QLabel, QListWidget, QListWidgetItem, QMainWindow,
+    QPushButton, QScrollArea, QSizePolicy, QSpacerItem,
+    QStackedWidget, QTabWidget, QTextBrowser, QVBoxLayout,
+    QWidget)
+
+class Ui_MainWindow(object):
+    def setupUi(self, MainWindow):
+        if not MainWindow.objectName():
+            MainWindow.setObjectName(u"MainWindow")
+        MainWindow.resize(1000, 700)
+        MainWindow.setStyleSheet(u"QMainWindow {\n"
+"	background-color: #81D8D0; /* Tiffany Blue */\n"
+"	color: #333333;\n"
+"}\n"
+"QWidget {\n"
+"	font-family: \"Segoe UI\", \"Microsoft YaHei\";\n"
+"	font-size: 10pt;\n"
+"    color: #333333;\n"
+"}\n"
+"QListWidget {\n"
+"	background-color: #E0F2F1; /* Lighter Teal/Cyan */\n"
+"	border: none;\n"
+"	color: #333333;\n"
+"	outline: 0;\n"
+"}\n"
+"QListWidget::item {\n"
+"	height: 40px;\n"
+"	padding-left: 10px;\n"
+"}\n"
+"QListWidget::item:selected {\n"
+"	background-color: #00897B; /* Darker Teal for selection */\n"
+"	color: white;\n"
+"}\n"
+"QListWidget::item:hover {\n"
+"	background-color: #B2DFDB;\n"
+"}\n"
+"QGroupBox {\n"
+"	border: 1px solid #00897B;\n"
+"	border-radius: 5px;\n"
+"	margin-top: 20px;\n"
+"	color: #00695C;\n"
+"	font-weight: bold;\n"
+"}\n"
+"QGroupBox::title {\n"
+"	subcontrol-origin: margin;\n"
+"	left: 10px;\n"
+"	padding: 0 3px 0 3px;\n"
+"}\n"
+"QPushButton {\n"
+"	background-color: #E0F7FA;\n"
+"	color: #006064;\n"
+"	border: 1px solid #00897B;\n"
+"	border-radius: 4px;\n"
+"	padding: 5px 15px;\n"
+"}\n"
+""
+                        "QPushButton:hover {\n"
+"	background-color: #B2DFDB;\n"
+"}\n"
+"QPushButton:pressed {\n"
+"	background-color: #80CBC4;\n"
+"}\n"
+"QPushButton#btn_toggle_running {\n"
+"	background-color: #2e7d32; /* Default Green for Start */\n"
+"    color: white;\n"
+"	border-color: #1b5e20;\n"
+"    font-weight: bold;\n"
+"    font-size: 11pt;\n"
+"}\n"
+"QPushButton#btn_toggle_running:checked {\n"
+"    background-color: #c62828; /* Red for Stop */\n"
+"    border-color: #b71c1c;\n"
+"}\n"
+"QPushButton#btn_toggle_running:hover {\n"
+"    opacity: 0.9;\n"
+"}\n"
+"QTabWidget::pane {\n"
+"	border: 1px solid #00897B;\n"
+"	background-color: #FFFFFF;\n"
+"}\n"
+"QTabBar::tab {\n"
+"	background-color: #E0F2F1;\n"
+"	color: #00695C;\n"
+"	padding: 8px 20px;\n"
+"	border-top-left-radius: 4px;\n"
+"	border-top-right-radius: 4px;\n"
+"}\n"
+"QTabBar::tab:selected {\n"
+"	background-color: #FFFFFF;\n"
+"	color: #004D40;\n"
+"	border-bottom: 2px solid #00897B;\n"
+"}\n"
+"QTextBrowser {\n"
+"	background-color: #F0F4C3; /* Very light yellowish/green for logs, readable"
+                        " */\n"
+"	color: #33691E;\n"
+"	border: 1px solid #00897B;\n"
+"	font-family: \"Consolas\", \"Courier New\";\n"
+"}\n"
+"QComboBox {\n"
+"	background-color: #E0F7FA;\n"
+"	color: #006064;\n"
+"	border: 1px solid #00897B;\n"
+"	padding: 5px;\n"
+"}\n"
+"QComboBox::drop-down {\n"
+"	border: 0px;\n"
+"}\n"
+"QLabel#label_logo {\n"
+"    border: 2px dashed #00897B;\n"
+"    color: #00796B;\n"
+"}\n"
+"")
+        self.centralwidget = QWidget(MainWindow)
+        self.centralwidget.setObjectName(u"centralwidget")
+        self.horizontalLayout = QHBoxLayout(self.centralwidget)
+        self.horizontalLayout.setSpacing(0)
+        self.horizontalLayout.setObjectName(u"horizontalLayout")
+        self.horizontalLayout.setContentsMargins(0, 0, 0, 0)
+        self.sidebar_container = QWidget(self.centralwidget)
+        self.sidebar_container.setObjectName(u"sidebar_container")
+        self.sidebar_container.setMinimumSize(QSize(220, 0))
+        self.sidebar_container.setMaximumSize(QSize(220, 16777215))
+        self.sidebar_container.setStyleSheet(u"background-color: #B2DFDB; /* Sidebar slightly darker/different shade */")
+        self.verticalLayout = QVBoxLayout(self.sidebar_container)
+        self.verticalLayout.setSpacing(10)
+        self.verticalLayout.setObjectName(u"verticalLayout")
+        self.verticalLayout.setContentsMargins(0, 10, 0, 10)
+        self.label_logo = QLabel(self.sidebar_container)
+        self.label_logo.setObjectName(u"label_logo")
+        self.label_logo.setMinimumSize(QSize(0, 100))
+        self.label_logo.setStyleSheet(u"border: 2px dashed #00695C; color: #004D40; margin: 10px;")
+        self.label_logo.setAlignment(Qt.AlignCenter)
+
+        self.verticalLayout.addWidget(self.label_logo)
+
+        self.line = QFrame(self.sidebar_container)
+        self.line.setObjectName(u"line")
+        self.line.setFrameShape(QFrame.Shape.HLine)
+        self.line.setFrameShadow(QFrame.Shadow.Sunken)
+
+        self.verticalLayout.addWidget(self.line)
+
+        self.list_instances = QListWidget(self.sidebar_container)
+        self.list_instances.setObjectName(u"list_instances")
+        self.list_instances.setSelectionMode(QAbstractItemView.SingleSelection)
+
+        self.verticalLayout.addWidget(self.list_instances)
+
+        self.sidebar_tools = QWidget(self.sidebar_container)
+        self.sidebar_tools.setObjectName(u"sidebar_tools")
+        self.verticalLayout_tools = QVBoxLayout(self.sidebar_tools)
+        self.verticalLayout_tools.setObjectName(u"verticalLayout_tools")
+        self.verticalLayout_tools.setContentsMargins(10, -1, 10, -1)
+        self.horizontalLayout_2 = QHBoxLayout()
+        self.horizontalLayout_2.setObjectName(u"horizontalLayout_2")
+        self.btn_add_instance = QPushButton(self.sidebar_tools)
+        self.btn_add_instance.setObjectName(u"btn_add_instance")
+
+        self.horizontalLayout_2.addWidget(self.btn_add_instance)
+
+        self.btn_refresh_adb = QPushButton(self.sidebar_tools)
+        self.btn_refresh_adb.setObjectName(u"btn_refresh_adb")
+
+        self.horizontalLayout_2.addWidget(self.btn_refresh_adb)
+
+        self.btn_global_settings = QPushButton(self.sidebar_tools)
+        self.btn_global_settings.setObjectName(u"btn_global_settings")
+
+        self.horizontalLayout_2.addWidget(self.btn_global_settings)
+
+
+        self.verticalLayout_tools.addLayout(self.horizontalLayout_2)
+
+
+        self.verticalLayout.addWidget(self.sidebar_tools)
+
+
+        self.horizontalLayout.addWidget(self.sidebar_container)
+
+        self.stacked_pages = QStackedWidget(self.centralwidget)
+        self.stacked_pages.setObjectName(u"stacked_pages")
+        self.page_welcome = QWidget()
+        self.page_welcome.setObjectName(u"page_welcome")
+        self.verticalLayout_2 = QVBoxLayout(self.page_welcome)
+        self.verticalLayout_2.setObjectName(u"verticalLayout_2")
+        self.verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+
+        self.verticalLayout_2.addItem(self.verticalSpacer)
+
+        self.label_welcome = QLabel(self.page_welcome)
+        self.label_welcome.setObjectName(u"label_welcome")
+        font = QFont()
+        font.setPointSize(16)
+        self.label_welcome.setFont(font)
+        self.label_welcome.setStyleSheet(u"color: #004D40;")
+        self.label_welcome.setAlignment(Qt.AlignCenter)
+
+        self.verticalLayout_2.addWidget(self.label_welcome)
+
+        self.verticalSpacer_2 = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+
+        self.verticalLayout_2.addItem(self.verticalSpacer_2)
+
+        self.stacked_pages.addWidget(self.page_welcome)
+        self.page_instance_detail = QWidget()
+        self.page_instance_detail.setObjectName(u"page_instance_detail")
+        self.verticalLayout_3 = QVBoxLayout(self.page_instance_detail)
+        self.verticalLayout_3.setObjectName(u"verticalLayout_3")
+        self.header_frame = QFrame(self.page_instance_detail)
+        self.header_frame.setObjectName(u"header_frame")
+        self.header_frame.setFrameShape(QFrame.StyledPanel)
+        self.header_frame.setFrameShadow(QFrame.Raised)
+        self.horizontalLayout_3 = QHBoxLayout(self.header_frame)
+        self.horizontalLayout_3.setObjectName(u"horizontalLayout_3")
+        self.label_instance_name = QLabel(self.header_frame)
+        self.label_instance_name.setObjectName(u"label_instance_name")
+        font1 = QFont()
+        font1.setPointSize(14)
+        font1.setBold(True)
+        self.label_instance_name.setFont(font1)
+
+        self.horizontalLayout_3.addWidget(self.label_instance_name)
+
+        self.label_status_icon = QLabel(self.header_frame)
+        self.label_status_icon.setObjectName(u"label_status_icon")
+
+        self.horizontalLayout_3.addWidget(self.label_status_icon)
+
+        self.label_status_text = QLabel(self.header_frame)
+        self.label_status_text.setObjectName(u"label_status_text")
+
+        self.horizontalLayout_3.addWidget(self.label_status_text)
+
+        self.horizontalSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.horizontalLayout_3.addItem(self.horizontalSpacer)
+
+        self.btn_toggle_running = QPushButton(self.header_frame)
+        self.btn_toggle_running.setObjectName(u"btn_toggle_running")
+        self.btn_toggle_running.setMinimumSize(QSize(120, 40))
+        self.btn_toggle_running.setCheckable(True)
+
+        self.horizontalLayout_3.addWidget(self.btn_toggle_running)
+
+
+        self.verticalLayout_3.addWidget(self.header_frame)
+
+        self.tabWidget = QTabWidget(self.page_instance_detail)
+        self.tabWidget.setObjectName(u"tabWidget")
+        self.tab_tasks = QWidget()
+        self.tab_tasks.setObjectName(u"tab_tasks")
+        self.verticalLayout_4 = QVBoxLayout(self.tab_tasks)
+        self.verticalLayout_4.setObjectName(u"verticalLayout_4")
+        self.scrollArea = QScrollArea(self.tab_tasks)
+        self.scrollArea.setObjectName(u"scrollArea")
+        self.scrollArea.setWidgetResizable(True)
+        self.scrollAreaWidgetContents = QWidget()
+        self.scrollAreaWidgetContents.setObjectName(u"scrollAreaWidgetContents")
+        self.scrollAreaWidgetContents.setGeometry(QRect(0, 0, 736, 515))
+        self.verticalLayout_tasks = QVBoxLayout(self.scrollAreaWidgetContents)
+        self.verticalLayout_tasks.setObjectName(u"verticalLayout_tasks")
+        self.verticalSpacer_3 = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+
+        self.verticalLayout_tasks.addItem(self.verticalSpacer_3)
+
+        self.scrollArea.setWidget(self.scrollAreaWidgetContents)
+
+        self.verticalLayout_4.addWidget(self.scrollArea)
+
+        self.tabWidget.addTab(self.tab_tasks, "")
+        self.tab_logs = QWidget()
+        self.tab_logs.setObjectName(u"tab_logs")
+        self.verticalLayout_5 = QVBoxLayout(self.tab_logs)
+        self.verticalLayout_5.setObjectName(u"verticalLayout_5")
+        self.text_log = QTextBrowser(self.tab_logs)
+        self.text_log.setObjectName(u"text_log")
+
+        self.verticalLayout_5.addWidget(self.text_log)
+
+        self.tabWidget.addTab(self.tab_logs, "")
+        self.tab_stats = QWidget()
+        self.tab_stats.setObjectName(u"tab_stats")
+        self.tabWidget.addTab(self.tab_stats, "")
+
+        self.verticalLayout_3.addWidget(self.tabWidget)
+
+        self.stacked_pages.addWidget(self.page_instance_detail)
+
+        self.horizontalLayout.addWidget(self.stacked_pages)
+
+        MainWindow.setCentralWidget(self.centralwidget)
+
+        self.retranslateUi(MainWindow)
+
+        self.stacked_pages.setCurrentIndex(0)
+        self.tabWidget.setCurrentIndex(0)
+
+
+        QMetaObject.connectSlotsByName(MainWindow)
+    # setupUi
+
+    def retranslateUi(self, MainWindow):
+        MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"KSAS V3.4 - Kingshot Automation System", None))
+        self.label_logo.setText(QCoreApplication.translate("MainWindow", u"LOGO\n"
+"(Square)", None))
+#if QT_CONFIG(tooltip)
+        self.btn_add_instance.setToolTip(QCoreApplication.translate("MainWindow", u"\u6dfb\u52a0\u65b0\u8bbe\u5907", None))
+#endif // QT_CONFIG(tooltip)
+        self.btn_add_instance.setText(QCoreApplication.translate("MainWindow", u"\u2795", None))
+#if QT_CONFIG(tooltip)
+        self.btn_refresh_adb.setToolTip(QCoreApplication.translate("MainWindow", u"\u5237\u65b0 ADB \u8fde\u63a5", None))
+#endif // QT_CONFIG(tooltip)
+        self.btn_refresh_adb.setText(QCoreApplication.translate("MainWindow", u"\ud83d\udd04", None))
+#if QT_CONFIG(tooltip)
+        self.btn_global_settings.setToolTip(QCoreApplication.translate("MainWindow", u"\u5168\u5c40\u8bbe\u7f6e", None))
+#endif // QT_CONFIG(tooltip)
+        self.btn_global_settings.setText(QCoreApplication.translate("MainWindow", u"\u2699\ufe0f", None))
+        self.label_welcome.setText(QCoreApplication.translate("MainWindow", u"\u8bf7\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u4e2a\u5b9e\u4f8b\uff0c\u6216\u70b9\u51fb \u2795 \u6dfb\u52a0\u65b0\u8bbe\u5907", None))
+        self.label_instance_name.setText(QCoreApplication.translate("MainWindow", u"Instance Name", None))
+        self.label_status_icon.setText(QCoreApplication.translate("MainWindow", u"\ud83d\udfe2", None))
+        self.label_status_text.setText(QCoreApplication.translate("MainWindow", u"Online - Idle", None))
+        self.btn_toggle_running.setText(QCoreApplication.translate("MainWindow", u"\u25b6 \u542f\u52a8\u6302\u673a", None))
+        self.tabWidget.setTabText(self.tabWidget.indexOf(self.tab_tasks), QCoreApplication.translate("MainWindow", u"\u4efb\u52a1\u914d\u7f6e", None))
+        self.text_log.setHtml(QCoreApplication.translate("MainWindow", u"<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
+"<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
+"p, li { white-space: pre-wrap; }\n"
+"</style></head><body style=\" font-family:'Consolas'; font-size:10pt; font-weight:400; font-style:normal;\">\n"
+"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" color:#888888;\">[12:00:00] System initialized.</span></p>\n"
+"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" color:#00897B;\">[12:00:01] Connected to device.</span></p></body></html>", None))
+        self.tabWidget.setTabText(self.tabWidget.indexOf(self.tab_logs), QCoreApplication.translate("MainWindow", u"\u8fd0\u884c\u65e5\u5fd7", None))
+        self.tabWidget.setTabText(self.tabWidget.indexOf(self.tab_stats), QCoreApplication.translate("MainWindow", u"\u7edf\u8ba1\u4e0e\u72b6\u6001", None))
+    # retranslateUi
+
+
+
+==================================================
+FILE: .\ui\__init__.py
+==================================================
+
+
+==================================================
+FILE: .\ui\generated\ui_main_window.py
+==================================================
+
+
+==================================================
+FILE: .\ui\generated\__init__.py
+==================================================
+

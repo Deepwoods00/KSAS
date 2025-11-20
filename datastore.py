@@ -85,7 +85,12 @@ class InstanceDataStore(QObject):
         default_config = {
             "instance_name": self.instance_id,
             "adb_device_id": "",
-            "modules": {}
+            "modules": {
+                "general": {
+                    "auto_restart": True,
+                    "total_march_slots": 4,
+                    "diana_level": 5 
+                }
         }
         self._load_json(self.config_path, self._config, default_config)
 
@@ -102,20 +107,34 @@ class InstanceDataStore(QObject):
         self._load_json(self.stats_path, self._stats, default_stats)
 
     def _load_json(self, path, container, default):
-        """通用安全加载逻辑"""
+        """通用的安全读取逻辑 (带简单的二级补全)"""
         with self._lock:
             if os.path.exists(path):
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        container.update(data)
+                        saved_data = json.load(f)
                         
-                        # 简单补全默认字段
-                        for k, v in default.items():
-                            if k not in container:
-                                container[k] = v
+                        # 1. 先把默认值深拷贝进来
+                        # (这样能保证拥有最全的字段结构)
+                        import copy
+                        merged_data = copy.deepcopy(default)
+                        
+                        # 2. 递归更新 (这里只做两层简单的合并，够用了)
+                        for key, val in saved_data.items():
+                            if isinstance(val, dict) and key in merged_data and isinstance(merged_data[key], dict):
+                                # 如果是字典（比如 modules），进去更新里面的字段
+                                merged_data[key].update(val)
+                            else:
+                                # 如果是普通值，直接覆盖
+                                merged_data[key] = val
+                        
+                        # 3. 更新到内存容器
+                        container.clear()
+                        container.update(merged_data)
+                        
                 except Exception as e:
-                    self.push_log(f"文件 {os.path.basename(path)} 损坏，已重置: {e}", "ERROR")
+                    self.push_log(f"文件 {os.path.basename(path)} 损坏/解析失败: {e}", "ERROR")
+                    # 损坏了就用默认值
                     container.clear()
                     container.update(default)
                     self._save_json(path, container)

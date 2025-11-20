@@ -3,7 +3,7 @@ import os
 import time
 import logging
 import random
-import threading  # 新增：用于 OCR 锁
+import threading
 import cv2
 import numpy as np
 from functools import wraps
@@ -12,203 +12,181 @@ from datetime import datetime
 # Airtest 核心 API
 from airtest.core.api import (
     connect_device, set_current, touch, swipe, text, 
-    wait, exists, sleep, snapshot, keyevent
+    wait, exists, sleep, snapshot, keyevent, Template
 )
 from airtest.core.error import TargetNotFoundError
 from airtest.core.helper import G
 
-# OCR 库引入 (按需加载)
+# OCR 库引入
 try:
     from paddleocr import PaddleOCR
 except ImportError:
     PaddleOCR = None
 
+# ====================================================
+# 🔒 全局互斥锁 (Reentrant Lock)
+# ====================================================
+_ADB_LOCK = threading.RLock()
+
 # ==========================================
-# 🧠 全局共享资源 (Global Shared Resources)
+# 🧠 全局共享资源 (OCR)
 # ==========================================
 class GlobalOCR:
-    """
-    全区唯一的 OCR 服务中心 (单例 + 线程锁)
-    所有实例公用这一个引擎，节省内存 (约300-500MB -> 仅一份)。
-    """
     _engine = None
-    _lock = threading.Lock() # 排队锁
+    _lock = threading.Lock()
 
     @classmethod
     def _init_engine(cls):
-        """内部初始化方法"""
         if PaddleOCR is None:
             return None
-        # use_angle_cls=False 关掉方向检测提速
-        # lang='en' 兼容英文和数字
-        # show_log=False 关掉刷屏日志
-        return PaddleOCR(use_angle_cls=False, lang='ch', show_log=False)
+        # 👇【关键修改】去掉 show_log=False，防止新版报错
+        return PaddleOCR(use_angle_cls=False, lang='ch')
 
     @classmethod
     def safe_ocr(cls, img_array):
-        """
-        线程安全的 OCR 识别
-        :param img_array: cv2 格式的图片数组
-        :return: PaddleOCR 的原始结果 list
-        """
-        # 1. 懒加载：第一个人用的时候才初始化
         if cls._engine is None:
             with cls._lock:
-                # 双重检查锁
                 if cls._engine is None:
                     cls._engine = cls._init_engine()
         
         if cls._engine is None:
             return []
 
-        # 2. 排队执行：保证同一时刻只有一个线程在用 OCR
         with cls._lock:
             try:
-                # cls=False 不做分类，只做检测和识别
-                result = cls._engine.ocr(img_array, cls=False)
+                # 直接传图片
+                result = cls._engine.ocr(img_array)
                 return result
             except Exception as e:
                 print(f"[GlobalOCR] 识别报错: {e}")
                 return []
 
 # ==========================================
-# 🛠️ 实例操作器 (Instance Operator)
+# 🛠️ 实例操作器
 # ==========================================
 class DeviceOperator:
-    """
-    KSAS 基础工具箱 (Basic Toolbox)
-    职责：封装底层 ADB 操作，提供安全、防崩、带日志和截图的原子指令。
-    """
-
     def __init__(self, serial, instance_id, data_dir_root="data"):
-        """
-        初始化设备操作器
-        :param serial: 设备的 ADB 序列号 (如 emulator-5554)
-        :param instance_id: 实例 ID (用于区分日志和截图文件夹)
-        """
         self.serial = serial
         self.instance_id = instance_id
+        self.logger = logging.getLogger(f"{instance_id}.Device")
         
-        # 配置该实例专属的 Logger
-        self.logger = logging.getLogger(f"Dev_{instance_id}")
-        
-        # 初始化文件目录: data/[instance_id]/snapshots/
         self.base_dir = os.path.join(data_dir_root, instance_id)
         self.snapshot_dir = os.path.join(self.base_dir, "snapshots")
         os.makedirs(self.snapshot_dir, exist_ok=True)
 
         self._is_connected = False
 
-    def connect(self):
-        """连接设备"""
-        try:
-            # 尝试连接
-            uri = f"Android:///{self.serial}"
-            connect_device(uri)
-            self._is_connected = True
-            self.logger.info(f"设备已连接: {self.serial}")
-            return True
-        except Exception as e:
-            self.logger.error(f"设备连接失败: {e}")
-            self._is_connected = False
-            return False
-
-    def _ensure_context(self):
-        """确保当前操作针对的是本实例的设备"""
-        try:
-            set_current(self.serial)
-        except Exception:
-            self.logger.warning(f"上下文丢失 ({self.serial})，尝试重连...")
-            if self.connect():
-                try:
-                    set_current(self.serial)
-                except Exception as e:
-                    self.logger.error(f"重连后无法设置上下文: {e}")
-            else:
-                self.logger.error(f"重连失败: {self.serial}")
-
     # ==========================================
-    # 🛡️ 核心装饰器：钢铁侠战衣 (Safe Wrap)
+    # 🛡️ 装饰器 (用于动作，返回 Bool)
     # ==========================================
     def _safe_wrap(func):
-        """
-        [装饰器] 自动处理上下文、异常捕获、截图证据
-        所有 Action 级函数都必须加上这个装饰器。
-        """
         @wraps(func)
         def wrapper(self, *args, **kwargs):
             action_name = func.__name__
-            
-            # 1. 确保上下文 (防止多开串台)
-            self._ensure_context()
-            
-            try:
-                # 2. 尝试执行原始逻辑
-                result = func(self, *args, **kwargs)
-                # 如果函数没有返回值，默认视为成功 (True)
-                return True if result is None else result
-            
-            except TargetNotFoundError:
-                # 场景：找不到图片
-                self.logger.warning(f"[{action_name}] 失败: 目标图片未找到")
-                self._save_snapshot(f"{action_name}_404")
-                return False
-                
-            except Exception as e:
-                # 场景：断连、卡死或其他报错
-                self.logger.error(f"[{action_name}] 异常: {e}")
-                self._save_snapshot(f"{action_name}_error")
-                return False
-                
+            with _ADB_LOCK:
+                self._ensure_context()
+                try:
+                    result = func(self, *args, **kwargs)
+                    return True if result is None else result
+                except TargetNotFoundError:
+                    self.logger.warning(f"[{action_name}] 未找到目标")
+                    self._save_snapshot(f"{action_name}_404")
+                    return False
+                except Exception as e:
+                    self.logger.error(f"[{action_name}] 异常: {e}")
+                    self._save_snapshot(f"{action_name}_error")
+                    return False
         return wrapper
 
     # ==========================================
-    # 🔌 系统连接与底层 (System)
+    # 🔌 系统连接
     # ==========================================
     def connect(self):
-        """连接设备"""
-        try:
-            # 构造连接字符串，cap_method=MINICAP 截图更快
-            uri = f"Android:///{self.serial}?cap_method=MINICAP&touch_method=MAXTOUCH"
-            self.logger.info(f"正在连接设备: {self.serial} ...")
-            connect_device(uri)
-            self._is_connected = True
-            self.logger.info("连接成功")
-            return True
-        except Exception as e:
-            self.logger.error(f"连接失败: {e}")
-            return False
+        with _ADB_LOCK:
+            try:
+                uri = f"Android:///{self.serial}?cap_method=JAVACAP&touch_method=ADBTOUCH"
+                connect_device(uri)
+                self._is_connected = True
+                self.logger.info(f"连接成功: {self.serial}")
+                return True
+            except Exception as e:
+                self.logger.error(f"连接失败: {e}")
+                self._is_connected = False
+                return False
 
     def _ensure_context(self):
-        """强制切换 Airtest 的操作对象到当前设备"""
         if self._is_connected:
             try:
                 set_current(self.serial)
             except Exception:
-                self.connect()
+                pass
 
     def _save_snapshot(self, tag):
-        """保存截图证据"""
         try:
             timestamp = datetime.now().strftime("%H%M%S")
             filename = f"{timestamp}_{tag}.png"
             filepath = os.path.join(self.snapshot_dir, filename)
-            
-            self._ensure_context()
             snapshot(filename=filepath)
             return filepath
-        except Exception:
+        except:
             return None
+
+    # ==========================================
+    # 👆 动作执行 (保留装饰器)
+    # ==========================================
+    @_safe_wrap
+    def click(self, target, times=1, offset=(0, 0)):
+        for _ in range(times):
+            touch(target)
+            if times > 1:
+                sleep(random.uniform(0.2, 0.5))
+
+    @_safe_wrap
+    def swipe_screen(self, direction="up", scale=0.6, area=None):
+        if area:
+            x1, y1, x2, y2 = map(int, area)
+            w, h = x2 - x1, y2 - y1
+            base_x, base_y = x1, y1
+        else:
+            w, h = G.DEVICE.get_current_resolution()
+            base_x, base_y = 0, 0
+        cx, cy = base_x + w * 0.5, base_y + h * 0.5
+        delta_h, delta_w = h * scale * 0.5, w * scale * 0.5
+        if direction == "up":    start, end = (cx, cy + delta_h), (cx, cy - delta_h)
+        elif direction == "down": start, end = (cx, cy - delta_h), (cx, cy + delta_h)
+        elif direction == "left": start, end = (cx + delta_w, cy), (cx - delta_w, cy)
+        elif direction == "right": start, end = (cx - delta_w, cy), (cx + delta_w, cy)
+        else: return False
+        swipe(start, end)
+        sleep(0.8)
+
+    @_safe_wrap
+    def swipe_until_found(self, target, direction="up", scale=0.5, area=None, max_retry=5):
+        for i in range(max_retry):
+            time.sleep(0.5)
+            if exists(target): return True
+            self.logger.info(f"寻找目标... 滑动 #{i+1}")
+            self.swipe_screen(direction=direction, scale=scale, area=area)
+        return False
+
+    @_safe_wrap
+    def pinch(self, mode="in"):
+        from airtest.core.api import pinch as at_pinch
+        at_pinch(mode=mode, center=None)
+        sleep(1.5)
+
+    @_safe_wrap
+    def input_text(self, content, confirm=True):
+        text(str(content), enter=confirm)
+        sleep(1)
 
     @_safe_wrap
     def press_back(self):
-        """按物理返回键 (处理广告弹窗神器)"""
         keyevent("BACK")
         sleep(1)
 
     @_safe_wrap
     def app_restart(self, package_name):
-        """重启游戏"""
         from airtest.core.android.android import Android
         dev = G.DEVICE
         if isinstance(dev, Android):
@@ -217,136 +195,66 @@ class DeviceOperator:
             dev.start_app(package_name)
             sleep(5)
 
-    # ==========================================
-    # 👆 动作执行 (Actions)
-    # ==========================================
-
-    @_safe_wrap
-    def click(self, target, times=1, offset=(0, 0)):
-        """
-        点击目标 (带随机防封)
-        :param target: 图片 Template 对象 或 (x, y) 坐标
-        """
-        for _ in range(times):
-            touch(target) 
-            if times > 1:
-                sleep(random.uniform(0.2, 0.5))
-
-    @_safe_wrap
-    def swipe_screen(self, direction="up", scale=0.6, area=None):
-        """
-        滑动屏幕 (支持局部/全屏)
-        :param direction: "up", "down", "left", "right"
-        :param scale: 滑动幅度 (0.1~0.9)
-        :param area: (x1, y1, x2, y2) 限制区域
-        """
-        if area:
-            x1, y1, x2, y2 = map(int, area)
-            w = x2 - x1
-            h = y2 - y1
-            base_x, base_y = x1, y1
-        else:
-            w, h = G.DEVICE.get_current_resolution()
-            base_x, base_y = 0, 0
-
-        cx = base_x + w * 0.5
-        cy = base_y + h * 0.5
-        
-        # 计算偏移
-        delta_h = h * scale * 0.5
-        delta_w = w * scale * 0.5
-
-        if direction == "up":    # 手指下->上 (内容滚上去)
-            start, end = (cx, cy + delta_h), (cx, cy - delta_h)
-        elif direction == "down": # 手指上->下 (内容滚下来)
-            start, end = (cx, cy - delta_h), (cx, cy + delta_h)
-        elif direction == "left": # 手指右->左
-            start, end = (cx + delta_w, cy), (cx - delta_w, cy)
-        elif direction == "right": # 手指左->右
-            start, end = (cx - delta_w, cy), (cx + delta_w, cy)
-        else:
-            return False
-
-        swipe(start, end)
-        sleep(0.8) # 惯性等待
-
-    @_safe_wrap
-    def swipe_until_found(self, target, direction="up", scale=0.5, area=None, max_retry=5):
-        """滑动查找 (一直滑直到找到图片)"""
-        for i in range(max_retry):
-            if exists(target):
-                return True
-            self.logger.info(f"未找到目标，滑动 #{i+1}")
-            self.swipe_screen(direction=direction, scale=scale, area=area)
-        return False
-
-    @_safe_wrap
-    def pinch(self, mode="in"):
-        """双指缩放地图: 'in'(缩小/视野大), 'out'(放大)"""
-        from airtest.core.api import pinch as at_pinch
-        at_pinch(mode=mode, center=None)
-        sleep(1.5)
-
-    @_safe_wrap
-    def input_text(self, content, confirm=True):
-        """输入文字"""
-        text(str(content), enter=confirm)
-        sleep(1)
-
-    # ==========================================
-    # 👁️ 视觉与数据 (Vision & OCR)
-    # ==========================================
-    
     @_safe_wrap
     def exists(self, target):
-        """判断图片是否存在 (返回 Bool)"""
         return True if exists(target) else False
 
     @_safe_wrap
     def sleep(self, seconds):
         sleep(seconds)
 
-    @_safe_wrap
+    # ==========================================
+    # 👁️ 数据获取 (无装饰器，手动控制返回字符串)
+    # ==========================================
     def get_text(self, area=None):
-        """
-        OCR 识别指定区域的文字
-        使用 GlobalOCR 单例，线程安全
-        :param area: (x1, y1, x2, y2)
-        """
-        self._ensure_context()
-        
-        # 1. 截图并保存临时文件
-        # (Airtest 的 snapshot 也可以直接返回 bytes，但为了兼容性先存盘再读)
-        temp_path = os.path.join(self.snapshot_dir, "ocr_tmp.png")
-        snapshot(filename=temp_path)
-        
-        # 2. 读取并裁剪 (使用 OpenCV)
-        img = cv2.imread(temp_path)
-        if img is None: return ""
+        """OCR 识别 (手动加锁，返回字符串)"""
+        with _ADB_LOCK:
+            try:
+                self._ensure_context()
+                temp_path = os.path.join(self.snapshot_dir, "ocr_tmp.png")
+                snapshot(filename=temp_path)
+                img = cv2.imread(temp_path)
+                if img is None: return ""
 
-        if area:
-            x1, y1, x2, y2 = map(int, area)
-            # 边界保护
-            h, w = img.shape[:2]
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-            img = img[y1:y2, x1:x2]
+                if area:
+                    x1, y1, x2, y2 = map(int, area)
+                    h, w = img.shape[:2]
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w, x2), min(h, y2)
+                    img = img[y1:y2, x1:x2]
 
-        # 3. 调用全局 OCR (这一步会自动排队)
-        res = GlobalOCR.safe_ocr(img)
-        
-        if not res or res[0] is None:
+                # 图像增强
+                try:
+                    height, width = img.shape[:2]
+                    scale = 3
+                    zoomed = cv2.resize(img, (width*scale, height*scale), interpolation=cv2.INTER_CUBIC)
+                    gray = cv2.cvtColor(zoomed, cv2.COLOR_BGR2GRAY)
+                    _, binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)
+                    final_img = cv2.copyMakeBorder(binary, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+                    final_img = cv2.cvtColor(final_img, cv2.COLOR_GRAY2BGR)
+                except:
+                    final_img = img
+            except Exception as e:
+                self.logger.error(f"OCR前置操作异常: {e}")
+                return ""
+
+        # OCR (自带锁，移出 ADB 锁范围)
+        res = GlobalOCR.safe_ocr(final_img)
+        if not res: return ""
+
+        try:
+            if isinstance(res[0], dict):
+                texts = res[0].get('rec_texts', [])
+                txt = "".join(texts)
+            elif isinstance(res[0], list):
+                txt = "".join([line[1][0] for line in res[0]])
+            else:
+                txt = ""
+            return txt.strip()
+        except:
             return ""
-        
-        # 4. 提取文字
-        # PaddleOCR 结果结构: [[[[x,y]..], ('text', conf)], ...]
-        txt = " ".join([line[1][0] for line in res[0]])
-        return txt.strip()
 
     def parse_number(self, text):
-        """
-        [辅助函数] 将 '10.5k' 转换为整数 10500
-        """
         if not text: return 0
         s = str(text).lower().replace(" ", "").replace(",", "")
         multiplier = 1
@@ -356,84 +264,45 @@ class DeviceOperator:
         elif 'm' in s:
             multiplier = 1000000
             s = s.replace('m', '')
-        
         try:
             val = float(s)
             return int(val * multiplier)
-        except ValueError:
+        except:
             return 0
 
     # ==========================================
-    # 🏠 导航与状态 (Navigation & State)
+    # 🏠 导航与状态 (不加装饰器，内部调用原子操作)
     # ==========================================
     def check_resolution(self):
-        """
-        检查分辨率是否为 720x1280
-        :return: True/False
-        """
-        self._ensure_context()
-        w, h = G.DEVICE.get_current_resolution()
-        # 允许横竖屏颠倒 (720x1280 or 1280x720)
-        if (w == 720 and h == 1280) or (w == 1280 and h == 720):
-            return True
-        
-        self.logger.error(f"分辨率不匹配! 当前: {w}x{h}, 要求: 720x1280")
-        return False
+        try:
+            from airtest.core.android.adb import ADB
+            adb = ADB(self.serial)
+            output = adb.shell("wm size")
+            if not output: return False
+            import re
+            match = re.search(r"(\d+)x(\d+)", output)
+            if match:
+                w, h = int(match.group(1)), int(match.group(2))
+                if (w == 720 and h == 1280) or (w == 1280 and h == 720): return True
+            return False
+        except:
+            return False
 
-    @_safe_wrap
     def ensure_home(self):
-        """
-        确保回到主页 (Robust Home Navigation)
-        策略:
-        1. Check 1: 直接检查 home_check
-        2. Check 2: 检查 island -> 点 btn_town
-        3. Check 3: 检查 btn_town -> 点 btn_town
-        4. Fallback: Back x3 -> Check -> Back x1 -> Check
-        5. Ultimate: Restart Game
-        """
-        # 图片资源路径
         img_home = Template(r"assets/images/home_check.png")
         img_island = Template(r"assets/images/island.png")
         img_town_btn = Template(r"assets/images/btn_town.png")
         
-        # --- Phase 1: 快速检查 ---
-        if exists(img_home):
-            self.logger.info("已在主页")
-            return True
-            
-        # --- Phase 2: 尝试导航回城 ---
-        if exists(img_island):
-            self.logger.info("检测到岛屿，点击回城")
-            touch(img_town_btn)
-            if wait(img_home, timeout=10): return True
-            
-        if exists(img_town_btn):
-            self.logger.info("检测到回城按钮，点击回城")
-            touch(img_town_btn)
-            if wait(img_home, timeout=10): return True
-            
-        # --- Phase 3: 暴力复位 (Force Reset) ---
-        self.logger.warning("未找到主页特征，开始尝试暴力复位 (Back x3)")
-        for _ in range(3):
-            keyevent("BACK")
-            sleep(1)
-            
-        if exists(img_home):
-            self.logger.info("暴力复位成功 (Back x3)")
-            return True
-            
-        self.logger.warning("仍未回到主页，尝试再按一次 Back")
-        keyevent("BACK")
-        sleep(2)
+        if self.exists(img_home): return True
+        if self.exists(img_island):
+            self.click(img_town_btn)
+            if self.exists(img_home): return True
+        if self.exists(img_town_btn):
+            self.click(img_town_btn)
+            if self.exists(img_home): return True
         
-        if exists(img_home):
-            self.logger.info("暴力复位成功 (Back x4)")
-            return True
-            
-        # --- Phase 4: 终极保底 (Restart) ---
-        self.logger.error("无法回到主页，执行重启游戏!")
-        # 注意：这里需要传入包名，暂时假设包名已知或从配置读取
-        # self.app_restart("com.kingshot.game") # TODO: 需要包名
+        self.logger.warning("尝试暴力复位...")
+        for _ in range(3):
+            self.press_back()
+            if self.exists(img_home): return True
         return False
-
-# 文件结束

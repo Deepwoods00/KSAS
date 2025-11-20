@@ -1,6 +1,9 @@
 # tasks/base_task.py
 # -*- coding: utf-8 -*-
+
+import os
 import logging
+from airtest.core.api import Template
 from datetime import datetime, timedelta
 
 class BaseTask:
@@ -12,7 +15,19 @@ class BaseTask:
     2. priority: 优先级 (数字越大越重要，或者越小越重要，这里我们定：数字越小优先级越高 1 > 10)
     3. default_interval: 默认间隔秒数 (如果 config 没填就用这个)
     """
-    
+    DIANA_COST_TABLE = {
+        1: (23, 9),
+        2: (22, 9),
+        3: (22, 9),
+        4: (21, 9),
+        5: (20, 8)
+    }
+
+    # 默认消耗 (没有戴安娜时)
+    DEFAULT_COST = (25, 10)
+
+
+
     def __init__(self, device, data):
         """
         :param device: basic.py 的 DeviceOperator
@@ -20,7 +35,7 @@ class BaseTask:
         """
         self.device = device
         self.data = data
-        self.logger = logging.getLogger(f"Task_{self.name}")
+        self.logger = logging.getLogger(f"{self.data.instance_id}.Task.{self.name}")
 
     # ==========================================
     # ⚙️ 子类必须重写/配置的属性
@@ -127,20 +142,69 @@ class BaseTask:
         # 调用 device 的截图功能，tag 是任务名
         pass # 实际调用 basic.py
 
+    def calculate_cost(self, mode="rally"):
+        """
+        计算本次出征的体力消耗
+        :param mode: 'rally' (集结) 或 'beast' (打野)
+        :return: int (消耗值)
+        """
+        # 1. 先看戴安娜在不在
+        if self.find_diana():
+            # 2. 如果在，去读配置里的技能等级
+            # 我们把这个配置放在 general 里，因为它是账号属性
+            skill_level = self.data.get_cfg("modules.general.diana_level", 1)
+            
+            # 查表
+            costs = self.DIANA_COST_TABLE.get(skill_level, self.DEFAULT_COST)
+            
+            cost = costs[0] if mode == "rally" else costs[1]
+            self.logger.info(f"触发戴安娜减耗 (Lv.{skill_level}): 本次消耗 {cost}")
+            return cost
+        
+        else:
+            # 3. 不在，用默认值
+            cost = self.DEFAULT_COST[0] if mode == "rally" else self.DEFAULT_COST[1]
+            self.logger.info(f"常规消耗: {cost}")
+            return cost
+
+
     # ==========================================
     # 📊 游戏信息读取 (Game Info)
     # ==========================================
-    def get_current_stamina(self):
+
+    def find_diana(self):
         """
+        在出征界面寻找 Diana 的头像
+        """
+        # 记得把 Diana 的头像截图放在 assets/images/heroes/diana.png
+        # 建议截那个圆圆的头像，特征明显一点
+        img_diana = Template(r"assets/images/heroes/diana.png", threshold=0.9)
+        
+        if self.device.exists(img_diana):
+            self.logger.info("检测到队伍包含 Diana")
+            return True
+        else:
+            self.logger.debug("队伍中未检测到 Diana")
+            return False
+
+
+
+
+
+
+
+
+
+
+
+    """
+    def get_current_stamina(self):
+        '''
         读取当前体力值
         流程: 确保主页 -> 点头像 -> 点加号 -> OCR -> Back x2
         :return: int (当前体力)
-        """
+        '''
         from airtest.core.api import Template
-        
-        # 0. 检查分辨率 (仅首次或必要时检查，这里假设每次任务前检查更稳妥)
-        if not self.device.check_resolution():
-            return 0
 
         # 1. 确保在主页
         if not self.device.ensure_home():
@@ -191,3 +255,4 @@ class BaseTask:
         self.device.sleep(1)
         
         return val
+    """

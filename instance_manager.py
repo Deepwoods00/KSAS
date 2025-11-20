@@ -79,6 +79,10 @@ class InstanceManager(QObject):
             # 2. 加载 Scheduler
             try:
                 device = DeviceOperator(info['serial'], instance_id)
+                if device.connect():
+                    self.logger.info(f"实例 {instance_id} 设备连接成功")
+                else:
+                    self.logger.warning(f"实例 {instance_id} 设备连接失败")
                 sched = InstanceScheduler(instance_id, device, store, task_classes)
                 self.schedulers[instance_id] = sched
             except Exception as e:
@@ -112,6 +116,10 @@ class InstanceManager(QObject):
 
             # 3. 创建 Scheduler
             device = DeviceOperator(serial, instance_id)
+            if device.connect():
+                self.logger.info(f"新实例 {instance_id} 设备连接成功")
+            else:
+                self.logger.warning(f"新实例 {instance_id} 设备连接失败")
             task_classes = get_all_tasks()
             
             sched = InstanceScheduler(instance_id, device, new_store, task_classes)
@@ -145,6 +153,36 @@ class InstanceManager(QObject):
         del self._registry[instance_id]
         self._save_registry()
         self.sig_instance_list_changed.emit()
+
+    def update_instance(self, instance_id, new_serial=None, new_alias=None):
+        """
+        更新实例信息 (修改 Serial 或 别名)
+        """
+        if instance_id not in self._registry:
+            return False
+
+        # 1. 更新注册表
+        if new_serial:
+            self._registry[instance_id]['serial'] = new_serial
+        if new_alias:
+            self._registry[instance_id]['display_name'] = new_alias
+        
+        self._save_registry()
+
+        # 2. 更新 DataStore 里的 config.json
+        store = self.data_stores.get(instance_id)
+        if store:
+            if new_serial:
+                store.set_cfg("meta.serial", new_serial)
+            if new_alias:
+                store.set_cfg("meta.alias", new_alias)
+                
+            # 如果修改了 Serial，对应的 DeviceOperator 也需要更新 Serial
+            # 但为了简单，建议修改后提示用户重启程序，或者重新加载 Scheduler
+        
+        # 3. 发信号通知 UI 刷新列表
+        self.sig_instance_list_changed.emit()
+        return True
 
     def get_all_instances(self):
         result = []

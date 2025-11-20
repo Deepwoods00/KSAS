@@ -10,7 +10,14 @@ class BaseTaskConfigWidget(QGroupBox):
     def __init__(self, task_class, parent=None):
         super().__init__(parent)
         self.task_class = task_class
-        self.task_name = task_class.__name__
+
+
+
+        
+        if task_class.__name__ == "GeneralSettings":
+            self.task_name = "General"
+        else:
+            self.task_name = task_class.__name__
         
         # 设置 GroupBox 标题和开关
         self.setTitle(self.task_name)
