@@ -1,0 +1,113 @@
+# --- Sidebar ---
+btn_add_instance: "➕ Add Instance"
+btn_refresh_adb: "🔄"
+btn_global_settings: "⚙️ Settings"
+btn_minimize: "🔽"
+
+# --- Welcome ---
+lbl_welcome: "Select an instance from left, or click ➕ to add new."
+
+# --- Header ---
+lbl_status_idle: "Idle"
+lbl_status_running: "Running"
+btn_start: "▶ Start"
+btn_stop: "⏹ Stop"
+
+# --- Tabs ---
+tab_tasks: "Tasks"
+tab_logs: "Logs"
+tab_stats: "Stats"
+
+# --- Stats Panel ---
+group_stamina: "Stamina (Dbl-Click set)"
+lbl_idle_queues: "Idle March Queues:"
+
+# --- Task Lists ---
+lbl_running_title: "🔥 Running"
+lbl_queue_title: "⏳ Queue"
+lbl_waiting_title: "💤 Waiting"
+
+# --- Context Menu ---
+menu_run_now: "🚀 Run Now"
+menu_edit_info: "✏️ Edit Info"
+menu_open_folder: "📂 Open Folder"
+menu_delete: "🗑️ Delete"
+
+# --- Dialogs & Messages ---
+title_add_instance: "Add New Instance"
+title_edit_instance: "Edit Instance"
+lbl_name: "Name:"
+lbl_address: "Serial/IP:"
+lbl_diana: "Diana Level:"
+tip_diana: "(0 means not owned)"
+lbl_march_slots: "March Slots:"
+tip_march_slots: "(1-6)"
+msg_error: "Error"
+msg_success: "Success"
+msg_input_invalid: "Invalid Input: Name or Address cannot be empty!"
+msg_confirm_del: "Confirm Delete"
+msg_del_warn: "Are you sure to delete instance [{}]?\n\n• Config will be removed\n• Stats will be cleared\n• Unrecoverable!"
+msg_input_stamina: "Enter current stamina:"
+
+# --- Task Config ---
+cfg_diana_level: "🏹 Diana Skill Level"
+help_diana_level: "For stamina cost calc. 0 = Not owned."
+cfg_auto_restart: "🔄 Auto Restart"
+cfg_total_queues: "⚔️ Total March Queues"
+cfg_interval: "Interval (sec)"
+
+# --- Global Settings ---
+tab_general: "General"
+tab_adb: "ADB"
+tab_data: "Data"
+grp_language: "Language"
+grp_behavior: "Behavior"
+chk_close_tray: "Minimize to tray on close"
+chk_auto_connect: "Auto connect on startup"
+grp_adb_path: "ADB Path"
+chk_internal_adb: "Use Internal ADB (Recommended)"
+btn_browse: "Browse..."
+grp_adb_tools: "ADB Tools"
+btn_restart_adb: "Restart ADB Server"
+grp_backup: "Backup & Restore"
+btn_backup: "📦 Backup All Data"
+btn_restore: "♻️ Restore From Backup"
+grp_explorer: "Explorer"
+btn_open_data: "📂 Open Data Folder"
+btn_save: "Save"
+btn_cancel: "Cancel"
+msg_adb_restarted: "ADB Server Restarted"
+msg_backup_success: "Backup created:\n{}"
+msg_restore_confirm: "This will overwrite current configs. Continue?"
+msg_restore_success: "Data restored. Please restart."
+
+# --- Log Messages ---
+log_loading_instance: "Loading instance: {} ({})"
+log_registry_corrupted: "Registry corrupted: {}"
+log_save_registry_failed: "Failed to save registry: {}"
+log_load_scheduler_failed: "Failed to load scheduler {}: {}"
+log_instance_created: "Instance created: {}"
+log_create_instance_failed: "Failed to create instance: {}"
+log_deleting_instance: "Deleting instance: {}"
+log_stop_scheduler_error: "Error stopping scheduler: {}"
+log_folder_deleted: "Folder deleted: {}"
+log_delete_failed: "Failed to delete folder: {}"
+log_cleanup_file: "[{}] Auto cleanup: {}"
+log_cleanup_file_failed: "Failed to delete file {}: {}"
+log_cleanup_error: "[{}] Cleanup error: {}"
+
+log_next_run_scheduled: "Next run scheduled at: {}"
+log_task_started: "=== Task Started: {} ==="
+log_task_crashed: "Task Crashed: {}"
+log_task_finished: "=== Task Finished: {} ==="
+log_adjust_level_start: "Adjusting level to: Lv.{}"
+log_level_already_match: "✅ Already Lv.{}, skipping adjustment"
+log_level_img_missing: "⚠️ Missing level image: {}, skipping check"
+log_level_resetting: "Level mismatch, resetting to 1..."
+log_reset_warning: "Reset might have failed (minus not gray), continuing anyway..."
+log_level_upgrading: "Upgrading: +{} clicks"
+log_level_adjust_failed: "❌ Level adjustment failed, Lv.{} not detected"
+log_level_verify_success: "✅ Verified: Lv.{}"
+log_click_search: "Clicking search..."
+log_diana_cost: "Diana skill active (Lv.{}): Cost {}"
+log_normal_cost: "Diana not found, using normal cost: {}"

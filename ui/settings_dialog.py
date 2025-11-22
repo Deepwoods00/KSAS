@@ -12,13 +12,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from config import global_config
+from i18n.i18n import get_text
 
 class SettingsDialog(QDialog):
     sig_config_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("全局设置")
+        self.setWindowTitle(get_text("btn_global_settings"))
         self.resize(500, 400)
         self.setup_ui()
         self.load_settings()
@@ -32,23 +33,23 @@ class SettingsDialog(QDialog):
         # Tab 1: 通用设置
         self.tab_general = QWidget()
         self.setup_general_tab()
-        self.tabs.addTab(self.tab_general, "通用")
+        self.tabs.addTab(self.tab_general, get_text("tab_general"))
 
         # Tab 2: ADB 设置
         self.tab_adb = QWidget()
         self.setup_adb_tab()
-        self.tabs.addTab(self.tab_adb, "ADB")
+        self.tabs.addTab(self.tab_adb, get_text("tab_adb"))
 
         # Tab 3: 数据管理
         self.tab_data = QWidget()
         self.setup_data_tab()
-        self.tabs.addTab(self.tab_data, "数据管理")
+        self.tabs.addTab(self.tab_data, get_text("tab_data"))
 
         # 底部按钮
         btn_layout = QHBoxLayout()
-        btn_save = QPushButton("保存")
+        btn_save = QPushButton(get_text("btn_save"))
         btn_save.clicked.connect(self.save_settings)
-        btn_cancel = QPushButton("取消")
+        btn_cancel = QPushButton(get_text("btn_cancel"))
         btn_cancel.clicked.connect(self.reject)
         
         btn_layout.addStretch()
@@ -60,19 +61,19 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self.tab_general)
         
         # 语言
-        group_lang = QGroupBox("语言 / Language")
+        group_lang = QGroupBox(get_text("grp_language"))
         form_lang = QFormLayout()
         self.combo_lang = QComboBox()
         self.combo_lang.addItems(["简体中文 (zh_CN)", "English (en_US)"])
-        form_lang.addRow("界面语言:", self.combo_lang)
+        form_lang.addRow(get_text("grp_language") + ":", self.combo_lang)
         group_lang.setLayout(form_lang)
         layout.addWidget(group_lang)
 
         # 行为
-        group_behavior = QGroupBox("行为设置")
+        group_behavior = QGroupBox(get_text("grp_behavior"))
         vbox = QVBoxLayout()
-        self.chk_close_tray = QCheckBox("关闭窗口时最小化到托盘")
-        self.chk_auto_connect = QCheckBox("启动时自动连接上次设备")
+        self.chk_close_tray = QCheckBox(get_text("chk_close_tray"))
+        self.chk_auto_connect = QCheckBox(get_text("chk_auto_connect"))
         vbox.addWidget(self.chk_close_tray)
         vbox.addWidget(self.chk_auto_connect)
         group_behavior.setLayout(vbox)
@@ -83,17 +84,17 @@ class SettingsDialog(QDialog):
     def setup_adb_tab(self):
         layout = QVBoxLayout(self.tab_adb)
 
-        group_path = QGroupBox("ADB 路径")
+        group_path = QGroupBox(get_text("grp_adb_path"))
         vbox = QVBoxLayout()
         
-        self.chk_internal_adb = QCheckBox("使用内置 ADB (推荐)")
+        self.chk_internal_adb = QCheckBox(get_text("chk_internal_adb"))
         self.chk_internal_adb.toggled.connect(self.on_internal_adb_toggled)
         vbox.addWidget(self.chk_internal_adb)
 
         hbox = QHBoxLayout()
         self.line_adb_path = QLineEdit()
-        self.line_adb_path.setPlaceholderText("选择 adb.exe 路径...")
-        btn_browse = QPushButton("浏览...")
+        self.line_adb_path.setPlaceholderText("Select adb.exe path...")
+        btn_browse = QPushButton(get_text("btn_browse"))
         btn_browse.clicked.connect(self.browse_adb)
         hbox.addWidget(self.line_adb_path)
         hbox.addWidget(btn_browse)
@@ -103,9 +104,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(group_path)
 
         # 工具
-        group_tools = QGroupBox("ADB 工具")
+        group_tools = QGroupBox(get_text("grp_adb_tools"))
         hbox_tools = QHBoxLayout()
-        btn_restart_adb = QPushButton("重启 ADB 服务")
+        btn_restart_adb = QPushButton(get_text("btn_restart_adb"))
         btn_restart_adb.clicked.connect(self.restart_adb_server)
         hbox_tools.addWidget(btn_restart_adb)
         group_tools.setLayout(hbox_tools)
@@ -116,13 +117,13 @@ class SettingsDialog(QDialog):
     def setup_data_tab(self):
         layout = QVBoxLayout(self.tab_data)
 
-        group_backup = QGroupBox("备份与还原")
+        group_backup = QGroupBox(get_text("grp_backup"))
         vbox = QVBoxLayout()
         
-        btn_backup = QPushButton("📦 一键备份所有数据 (Backup)")
+        btn_backup = QPushButton(get_text("btn_backup"))
         btn_backup.clicked.connect(self.backup_data)
         
-        btn_restore = QPushButton("♻️ 从备份还原数据 (Restore)")
+        btn_restore = QPushButton(get_text("btn_restore"))
         btn_restore.clicked.connect(self.restore_data)
 
         vbox.addWidget(btn_backup)
@@ -130,9 +131,9 @@ class SettingsDialog(QDialog):
         group_backup.setLayout(vbox)
         layout.addWidget(group_backup)
 
-        group_explore = QGroupBox("文件浏览")
+        group_explore = QGroupBox(get_text("grp_explorer"))
         hbox = QHBoxLayout()
-        btn_open_data = QPushButton("📂 打开 Data 文件夹")
+        btn_open_data = QPushButton(get_text("btn_open_data"))
         btn_open_data.clicked.connect(lambda: self.open_folder("data"))
         hbox.addWidget(btn_open_data)
         group_explore.setLayout(hbox)
@@ -187,9 +188,9 @@ class SettingsDialog(QDialog):
         try:
             subprocess.run(["adb", "kill-server"], check=False)
             subprocess.run(["adb", "start-server"], check=False)
-            QMessageBox.information(self, "成功", "ADB 服务已重启")
+            QMessageBox.information(self, get_text("msg_success"), get_text("msg_adb_restarted"))
         except Exception as e:
-            QMessageBox.warning(self, "失败", f"重启 ADB 失败: {e}")
+            QMessageBox.warning(self, get_text("msg_error"), f"Failed: {e}")
 
     def backup_data(self):
         try:
@@ -212,27 +213,27 @@ class SettingsDialog(QDialog):
                             arcname = os.path.relpath(file_path, ".")
                             zipf.write(file_path, arcname)
             
-            QMessageBox.information(self, "备份成功", f"已创建备份文件:\n{os.path.abspath(filename)}")
+            QMessageBox.information(self, get_text("msg_success"), get_text("msg_backup_success").format(os.path.abspath(filename)))
         except Exception as e:
-            QMessageBox.critical(self, "备份失败", str(e))
+            QMessageBox.critical(self, get_text("msg_error"), str(e))
 
     def restore_data(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择备份文件", "", "Zip Files (*.zip)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select Backup", "", "Zip Files (*.zip)")
         if not path:
             return
 
         reply = QMessageBox.question(
-            self, "确认还原", 
-            "还原操作将覆盖当前的配置文件，确定要继续吗？",
+            self, "Confirm Restore",
+            get_text("msg_restore_confirm"),
             QMessageBox.Yes | QMessageBox.No
         )
         if reply == QMessageBox.Yes:
             try:
                 with zipfile.ZipFile(path, 'r') as zipf:
                     zipf.extractall(".")
-                QMessageBox.information(self, "还原成功", "数据已还原，请重启程序以生效。")
+                QMessageBox.information(self, get_text("msg_success"), get_text("msg_restore_success"))
             except Exception as e:
-                QMessageBox.critical(self, "还原失败", str(e))
+                QMessageBox.critical(self, get_text("msg_error"), str(e))
 
     def open_folder(self, folder):
         path = os.path.abspath(folder)

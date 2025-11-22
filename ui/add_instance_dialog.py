@@ -1,14 +1,15 @@
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-    QLineEdit, QComboBox, QPushButton, QMessageBox, QFormLayout
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QComboBox, QPushButton, QMessageBox, QFormLayout, QSpinBox
 )
 from airtest.core.android.adb import ADB
 import os
+from i18n.i18n import get_text
 
 class AddInstanceDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("添加新实例")
+        self.setWindowTitle(get_text("title_add_instance"))
         self.resize(400, 200)
         self.setup_ui()
         self.refresh_devices()
@@ -20,24 +21,37 @@ class AddInstanceDialog(QDialog):
         
         # 实例名称
         self.line_name = QLineEdit()
-        self.line_name.setPlaceholderText("例如: 主号, 小号1...")
-        form.addRow("实例名称:", self.line_name)
+        self.line_name.setPlaceholderText("e.g. Main, Alt1...")
+        form.addRow(get_text("lbl_name"), self.line_name)
 
         # 设备序列号
         hbox_serial = QHBoxLayout()
         self.combo_serial = QComboBox()
         self.combo_serial.setEditable(True)
-        self.combo_serial.setPlaceholderText("选择或输入设备 Serial/IP:Port")
+        self.combo_serial.setPlaceholderText("Serial/IP:Port")
         
         btn_refresh = QPushButton("🔄")
-        btn_refresh.setToolTip("刷新设备列表")
+        btn_refresh.setToolTip(get_text("btn_refresh_adb"))
         btn_refresh.setFixedWidth(40)
         btn_refresh.clicked.connect(self.refresh_devices)
         
         hbox_serial.addWidget(self.combo_serial)
         hbox_serial.addWidget(btn_refresh)
-        form.addRow("设备 Serial:", hbox_serial)
+        form.addRow(get_text("lbl_address"), hbox_serial)
 
+        # Diana 等级
+        self.spin_diana = QSpinBox()
+        self.spin_diana.setRange(0, 5)
+        self.spin_diana.setValue(0)
+        self.spin_diana.setSuffix(" Lv")
+        form.addRow(get_text("lbl_diana"), self.spin_diana)
+
+        # 行军队列
+        self.spin_march = QSpinBox()
+        self.spin_march.setRange(1, 6)
+        self.spin_march.setValue(5)
+        form.addRow(get_text("lbl_march_slots"), self.spin_march)
+        
         layout.addLayout(form)
 
         # 按钮
@@ -95,4 +109,9 @@ class AddInstanceDialog(QDialog):
             QMessageBox.warning(self, "ADB 错误", f"无法获取设备列表:\n{e}")
 
     def get_data(self):
-        return self.line_name.text().strip(), self.combo_serial.currentText().strip()
+        return (
+            self.line_name.text().strip(),
+            self.combo_serial.currentText().strip(),
+            self.spin_diana.value(),
+            self.spin_march.value()
+        )

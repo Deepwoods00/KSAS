@@ -2,18 +2,21 @@
 # -*- coding: utf-8 -*-
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit, 
-    QDialogButtonBox, QMessageBox
+    QDialogButtonBox, QSpinBox, QLabel
 )
+from i18n.i18n import get_text
 
 class EditInstanceDialog(QDialog):
-    def __init__(self, parent=None, current_name="", current_serial=""):
+    def __init__(self, parent=None, current_name="", current_serial="", current_diana=0, current_march_slots=5):
         super().__init__(parent)
-        self.setWindowTitle("修改实例信息")
-        self.resize(350, 150)
+        self.setWindowTitle(get_text("title_edit_instance"))
+        self.resize(350, 250)
         
         # 记录原始数据
         self.old_name = current_name
         self.old_serial = current_serial
+        self.old_diana = current_diana
+        self.old_march_slots = current_march_slots
         
         self.setup_ui()
 
@@ -23,14 +26,38 @@ class EditInstanceDialog(QDialog):
         # 表单区域
         form = QFormLayout()
         
+        # 1. 名字
         self.line_name = QLineEdit(self.old_name)
-        self.line_name.setPlaceholderText("给它起个新名字")
+        self.line_name.setPlaceholderText("New Name")
+        form.addRow(get_text("lbl_name"), self.line_name)
         
+        # 2. 地址
         self.line_serial = QLineEdit(self.old_serial)
-        self.line_serial.setPlaceholderText("例如: 127.0.0.1:5555")
+        self.line_serial.setPlaceholderText("e.g. 127.0.0.1:5555")
+        form.addRow(get_text("lbl_address"), self.line_serial)
         
-        form.addRow("实例名称:", self.line_name)
-        form.addRow("设备地址:", self.line_serial)
+        # 3. Diana 等级 (新增)
+        self.spin_diana = QSpinBox()
+        self.spin_diana.setRange(0, 5) # 0表示没有，1-5是等级
+        self.spin_diana.setValue(int(self.old_diana))
+        self.spin_diana.setSuffix(" Lv")
+        # 加个小提示
+        lbl_tip = QLabel(get_text("tip_diana"))
+        lbl_tip.setStyleSheet("color: gray; font-size: 9pt;")
+        
+        form.addRow(get_text("lbl_diana"), self.spin_diana)
+        form.addRow("", lbl_tip) # 占位显示提示
+
+        # 4. 行军队列 (新增)
+        self.spin_march = QSpinBox()
+        self.spin_march.setRange(1, 6)
+        self.spin_march.setValue(int(self.old_march_slots))
+        
+        lbl_tip_march = QLabel(get_text("tip_march_slots"))
+        lbl_tip_march.setStyleSheet("color: gray; font-size: 9pt;")
+        
+        form.addRow(get_text("lbl_march_slots"), self.spin_march)
+        form.addRow("", lbl_tip_march)
         
         layout.addLayout(form)
 
@@ -41,5 +68,10 @@ class EditInstanceDialog(QDialog):
         layout.addWidget(buttons)
 
     def get_data(self):
-        """返回修改后的数据"""
-        return self.line_name.text().strip(), self.line_serial.text().strip()
+        """返回: (name, serial, diana_level, march_slots)"""
+        return (
+            self.line_name.text().strip(),
+            self.line_serial.text().strip(),
+            self.spin_diana.value(),
+            self.spin_march.value()
+        )

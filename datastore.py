@@ -82,29 +82,32 @@ class InstanceDataStore(QObject):
     def load_all(self):
         """加载所有持久化数据"""
         # 1. 加载配置 (带默认值)
-        default_config = {
-            "instance_name": self.instance_id,
-            "adb_device_id": "",
-            "modules": {
-                "general": {
-                    "auto_restart": True,
-                    "total_march_slots": 4,
-                    "diana_level": 5 
-                }
-        }
+        default_config = self._load_default_json("data/defaults/default_config.json")
+        if default_config:
+            # 动态设置 instance_name 默认值
+            default_config["instance_name"] = self.instance_id
+        else:
+            # Fallback if file missing
+            default_config = {"instance_name": self.instance_id}
+            
         self._load_json(self.config_path, self._config, default_config)
 
         # 2. 加载统计 (默认为空)
-        default_stats = {
-            "stamina": 0,
-            "resources": {
-                "food": 0,
-                "wood": 0,
-                "stone": 0,
-                "iron": 0
-            }
-        }
+        default_stats = self._load_default_json("data/defaults/default_statistics.json")
+        if not default_stats:
+             default_stats = {}
+             
         self._load_json(self.stats_path, self._stats, default_stats)
+
+    def _load_default_json(self, path):
+        """从模板文件加载默认配置"""
+        try:
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Error loading default json {path}: {e}")
+        return None
 
     def _load_json(self, path, container, default):
         """通用的安全读取逻辑 (带简单的二级补全)"""

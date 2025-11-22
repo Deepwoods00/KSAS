@@ -3,7 +3,7 @@ from tasks.base_task import BaseTask
 class BeastTask(BaseTask):
     @property
     def name(self):
-        return "Beast"
+        return "BeastTask"
 
     @property
     def priority(self):
@@ -11,5 +11,6 @@ class BeastTask(BaseTask):
 
     def run_impl(self):
         self.logger.info("Executing Beast Task...")
-        # TODO: Implement logic
+        # 测试调级功能：比如调到 5级
+        self.select_search_level(5)
         return True

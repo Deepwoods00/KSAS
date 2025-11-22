@@ -3,42 +3,25 @@
 
 import os
 import logging
+import time
 from airtest.core.api import Template
 from datetime import datetime, timedelta
+from i18n.i18n import get_text
+from game.sidebar import Sidebar
 
 class BaseTask:
     """
     所有任务的基类 (ALAS 风格)
-    
-    核心属性：
-    1. name: 任务名 (用于在 JSON 里查找配置)
-    2. priority: 优先级 (数字越大越重要，或者越小越重要，这里我们定：数字越小优先级越高 1 > 10)
-    3. default_interval: 默认间隔秒数 (如果 config 没填就用这个)
     """
-    DIANA_COST_TABLE = {
-        1: (23, 9),
-        2: (22, 9),
-        3: (22, 9),
-        4: (21, 9),
-        5: (20, 8)
-    }
-
-    # 默认消耗 (没有戴安娜时)
-    DEFAULT_COST = (25, 10)
-
-
-
+    
     def __init__(self, device, data):
-        """
-        :param device: basic.py 的 DeviceOperator
-        :param data: datastore.py 的 InstanceDataStore
-        """
         self.device = device
         self.data = data
         self.logger = logging.getLogger(f"{self.data.instance_id}.Task.{self.name}")
+        self.sidebar = Sidebar(device, data)
 
     # ==========================================
-    # ⚙️ 子类必须重写/配置的属性
+    # ⚙️ 属性配置
     # ==========================================
     @property
     def name(self):
@@ -46,213 +29,147 @@ class BaseTask:
 
     @property
     def priority(self):
-        """优先级：1 (最高/紧急) ~ 100 (低/闲时)"""
         return 50
 
     @property
     def default_interval(self):
-        """默认循环间隔 (秒)，默认 1 小时"""
         return 3600
 
     # ==========================================
-    # ⏱️ ALAS 核心调度逻辑 (Scheduler 会调用这些)
+    # ⏱️ 调度逻辑
     # ==========================================
-    
     @property
     def enabled(self):
-        """检查用户是否在 UI 上开启了这个任务"""
-        # 读取 config.json: modules.hunting.enable
         return self.data.get_cfg(f"modules.{self.name.lower()}.enable", False)
 
     @property
     def next_run(self):
-        """
-        从 DataStore 读取下次运行时间
-        :return: datetime 对象
-        """
-        # 读取 statistics.json: tasks.Hunting.next_run
-        # 格式是字符串 "2023-11-19 12:00:00"
         time_str = self.data.get_stat(f"tasks.{self.name}.next_run", "1970-01-01 00:00:00")
         try:
             return datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
         except ValueError:
-            return datetime.min # 如果格式错，立即执行
+            return datetime.min 
 
     def set_next_run(self, seconds=None):
-        """
-        设置下次运行时间
-        :param seconds: 多少秒后运行。如果不填，尝试去 config 读取 'interval'
-        """
         if seconds is None:
-            # 尝试从配置读取用户设定的间隔，没有则用默认
             seconds = self.data.get_cfg(f"modules.{self.name.lower()}.interval", self.default_interval)
         
         future_time = datetime.now() + timedelta(seconds=int(seconds))
         time_str = future_time.strftime("%Y-%m-%d %H:%M:%S")
         
-        # 保存进 statistics.json (这就是日程表)
         self.data.set_stat(f"tasks.{self.name}.next_run", time_str)
-        self.logger.info(f"下次运行安排在: {time_str}")
+        self.logger.info(get_text("log_next_run_scheduled", time_str))
 
     # ==========================================
-    # 🏃 运行入口 (不要重写这个，重写 run_impl)
+    # 🏃 运行入口
     # ==========================================
     def execute(self):
-        """
-        调度器调用的标准入口
-        1. 检查是否真的要跑
-        2. 执行逻辑
-        3. 自动更新下次时间
-        """
-        self.logger.info(f"=== 任务启动: {self.name} ===")
-        
-        # 1. 更新 UI 状态
+        self.logger.info(get_text("log_task_started", self.name))
         self.data.set_runtime("current_task", self.name)
         
-        # 2. 执行具体逻辑 (子类实现)
         try:
             success = self.run_impl()
         except Exception as e:
-            self.logger.error(f"任务崩溃: {e}")
+            self.logger.error(get_text("log_task_crashed", e))
             success = False
         
-        # 3. 完事后，安排下次时间
-        # 如果任务失败了，是立即重试还是按原计划？这里暂定按原计划
-        # ALAS 的做法是：如果失败，可能只 sleep 5分钟而不是 1小时
         if success:
-            self.set_next_run() # 用 config 里的正常间隔
+            self.set_next_run()
         else:
-            self.set_next_run(seconds=300) # 失败后 5 分钟重试
+            self.set_next_run(seconds=300)
             
-        self.logger.info(f"=== 任务结束: {self.name} ===")
+        self.logger.info(get_text("log_task_finished", self.name))
 
     def run_impl(self):
-        """
-        【子类请重写这个方法】
-        真正的业务逻辑写在这里 (打怪、采集等)
-        :return: True(成功) / False(失败)
-        """
         raise NotImplementedError
 
     # ==========================================
-    # 🛠️ 常用快捷指令 (Shortcut)
-    # ==========================================
-    def screenshot(self):
-        """任务中截图"""
-        # 调用 device 的截图功能，tag 是任务名
-        pass # 实际调用 basic.py
-
-    def calculate_cost(self, mode="rally"):
-        """
-        计算本次出征的体力消耗
-        :param mode: 'rally' (集结) 或 'beast' (打野)
-        :return: int (消耗值)
-        """
-        # 1. 先看戴安娜在不在
-        if self.find_diana():
-            # 2. 如果在，去读配置里的技能等级
-            # 我们把这个配置放在 general 里，因为它是账号属性
-            skill_level = self.data.get_cfg("modules.general.diana_level", 1)
-            
-            # 查表
-            costs = self.DIANA_COST_TABLE.get(skill_level, self.DEFAULT_COST)
-            
-            cost = costs[0] if mode == "rally" else costs[1]
-            self.logger.info(f"触发戴安娜减耗 (Lv.{skill_level}): 本次消耗 {cost}")
-            return cost
-        
-        else:
-            # 3. 不在，用默认值
-            cost = self.DEFAULT_COST[0] if mode == "rally" else self.DEFAULT_COST[1]
-            self.logger.info(f"常规消耗: {cost}")
-            return cost
-
-
-    # ==========================================
-    # 📊 游戏信息读取 (Game Info)
+    # 🎮 通用游戏操作 (核心逻辑)
     # ==========================================
 
-    def find_diana(self):
+    def select_search_level(self, target_level):
         """
-        在出征界面寻找 Diana 的头像
+        通用的等级调整逻辑 (侦察 -> 归零 -> 调整 -> 核实)
+        :param target_level: int, 目标等级 (1-29)
         """
-        # 记得把 Diana 的头像截图放在 assets/images/heroes/diana.png
-        # 建议截那个圆圆的头像，特征明显一点
-        img_diana = Template(r"assets/images/heroes/diana.png", threshold=0.9)
+        # ==========================================
+        # 🛑 请务必修改这些坐标！(720x1280分辨率下)
+        # ==========================================
+        SLIDER_LEFT = (120, 1053) # 滑动条最左端 (能点到1级的位置)
+        BTN_MINUS = (69, 1053)    # 减号按钮中心
+        BTN_PLUS = (487, 1053)    # 加号按钮中心
+        BTN_SEARCH = (360, 1214) # 底部巨大的搜索按钮
         
-        if self.device.exists(img_diana):
-            self.logger.info("检测到队伍包含 Diana")
-            return True
+        # 图片路径模板
+        IMG_LEVEL_TPL = r"assets/images/map_level/{}.png"
+        IMG_MINUS_GRAY = Template(r"assets/images/map_level/grey_minus.png", threshold=0.95)
+
+        self.logger.info(get_text("log_adjust_level_start", target_level))
+
+        # --- 1. 侦察阶段 (Pre-Check) ---
+        # 如果当前屏幕上已经显示了目标等级，直接去搜索，省时省力
+        target_img_path = IMG_LEVEL_TPL.format(target_level)
+        
+        # 检查图片是否存在 (利用 basic.py 的 _exists_internal)
+        if os.path.exists(target_img_path):
+            target_tpl = Template(target_img_path, threshold=0.9)
+            if self.device.exists(target_tpl):
+                self.logger.info(get_text("log_level_already_match", target_level))
+                self.device.click(BTN_SEARCH)
+                return True
         else:
-            self.logger.debug("队伍中未检测到 Diana")
-            return False
+            self.logger.warning(get_text("log_level_img_missing", target_img_path))
 
-
-
-
-
-
-
-
-
-
-
-    """
-    def get_current_stamina(self):
-        '''
-        读取当前体力值
-        流程: 确保主页 -> 点头像 -> 点加号 -> OCR -> Back x2
-        :return: int (当前体力)
-        '''
-        from airtest.core.api import Template
-
-        # 1. 确保在主页
-        if not self.device.ensure_home():
-            self.logger.error("无法回到主页，放弃读取体力")
-            return 0
-            
-        # 2. 点击头像 (8, 8, 80, 80)
-        # Airtest 的 touch 支持绝对坐标 (x, y)
-        # 我们取中心点 (44, 44)
-        self.logger.info("点击头像进入 Profile")
-        self.device.click((44, 44))
-        self.device.sleep(2) # 等待动画
+        # --- 2. 归零阶段 (Reset to 1) ---
+        self.logger.info(get_text("log_level_resetting"))
         
-        # 3. 点击加号进入体力页
-        # 假设加号图片是 assets/images/profile_plus.png
-        img_plus = Template(r"assets/images/profile_plus.png")
-        if not self.device.exists(img_plus):
-            self.logger.error("未找到体力加号按钮")
-            self.device.press_back() # 尝试退回
-            return 0
-            
-        self.logger.info("点击加号查看体力")
-        self.device.click(img_plus)
-        self.device.sleep(1.5)
+        # A. 猛击滑动条左侧 (快速降级)
+        self.device.click(SLIDER_LEFT)
+        self.device.sleep(0.5) # 等动画
+
+        # B. 灰色检测与补刀 (确保降到 1)
+        is_reset_success = False
+        for _ in range(15): # 最多补点15次，防死循环
+            if self.device.exists(IMG_MINUS_GRAY):
+                # self.logger.debug("减号已变灰，归零成功")
+                is_reset_success = True
+                break
+            else:
+                # 还没灰，说明还没到1级，点减号补刀
+                self.device.click(BTN_MINUS, times=1)
+                # time.sleep(0.1) # click 内部已有 sleep，这里不用加太久
+
+        if not is_reset_success:
+            self.logger.warning(get_text("log_reset_warning"))
+
+        # --- 3. 调整阶段 (Adjust) ---
+        # 现在默认是 Lv.1
+        clicks_needed = target_level - 1
         
-        # 4. OCR 识别
-        # 区域: (350, 270, 480, 300)
-        area = (350, 270, 480, 300) 
-        text = self.device.get_text(area)
-        self.logger.debug(f"OCR Stamina Raw: {text}")
-        
-        # 5. 解析 "100/200" 格式
-        if "/" in text:
-            current_str = text.split("/")[0]
-        else:
-            current_str = text
-        val = self.device.parse_number(current_str)
-        
-        # 6. 更新到 DataStore
-        self.data.set_stat("stamina", val)
-        self.logger.info(f"当前体力: {val}")
-        
-        # 7. 返回主页 (Back x2)
-        self.logger.info("返回主页")
-        self.device.press_back()
-        self.device.sleep(1)
-        self.device.press_back()
-        self.device.sleep(1)
-        
-        return val
-    """
+        if clicks_needed > 0:
+            self.logger.info(get_text("log_level_upgrading", clicks_needed))
+            # 为了速度，我们可以直接调用 adb 连点，绕过 device.click 的 sleep
+            for _ in range(clicks_needed):
+                self.device.adb.touch(BTN_PLUS)
+                time.sleep(0.1) # 80ms 间隔，极速连点
+            self.device.sleep(0.8) # 等数字跳完
+
+        # --- 4. 核实阶段 (Verify) ---
+        # 再看一眼是不是我们要的等级
+        if os.path.exists(target_img_path):
+            if not self.device.exists(target_tpl):
+                self.logger.error(get_text("log_level_adjust_failed", target_level))
+                # 失败策略：是重试还是硬着头皮搜？
+                # 这里选择硬着头皮搜，万一只是图片识别不到呢
+            else:
+                self.logger.info(get_text("log_level_verify_success", target_level))
+
+        # --- 5. 搜索 ---
+        self.logger.info(get_text("log_click_search"))
+        self.device.click(BTN_SEARCH)
+        self.device.sleep(1.5) # 等待界面切换
+        return True
+
+    # ==========================================
+    # 📊 辅助功能
+    # ==========================================

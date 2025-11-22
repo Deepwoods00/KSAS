@@ -3,12 +3,13 @@ import sys
 import os
 from datetime import datetime
 from PySide6.QtWidgets import (
-    QMainWindow, QListWidgetItem, QMessageBox, QWidget, 
-    QSystemTrayIcon, QMenu, QStyle
+    QMainWindow, QListWidgetItem, QMessageBox, QWidget,
+    QSystemTrayIcon, QMenu, QStyle, QInputDialog, QGridLayout,
+    QGroupBox, QLabel, QVBoxLayout # 👈 新增导入
 )
 from PySide6.QtCore import QTimer, Slot, Signal, QFile, QIODevice, QObject, Qt, QEvent
 from PySide6.QtUiTools import QUiLoader
-from PySide6.QtGui import QPixmap, QColor, QIcon, QAction, QCursor
+from PySide6.QtGui import QPixmap, QColor, QIcon, QAction, QCursor, QTextCursor
 
 from instance_manager import InstanceManager
 from task_registry import get_all_tasks
@@ -17,7 +18,9 @@ from ui.settings_dialog import SettingsDialog
 from ui.add_instance_dialog import AddInstanceDialog
 from ui.edit_instance_dialog import EditInstanceDialog
 from config import global_config
-from i18n import i18n
+from i18n.i18n import get_text
+from ui.hero_management_widget import HeroManagementWidget
+from game.hero_manager import HeroManager
 
 class MainWindowLogic(QObject):
     def __init__(self):
@@ -36,6 +39,9 @@ class MainWindowLogic(QObject):
         
         # 3. 初始化托盘图标
         self.init_system_tray()
+        
+        # 3.5 重构侧边栏按钮布局 (2x2)
+        self.rearrange_sidebar_buttons()
 
         # 4. 连接信号
         self.ui.list_instances.itemClicked.connect(self.on_instance_selected)
@@ -45,7 +51,7 @@ class MainWindowLogic(QObject):
         self.ui.btn_global_settings.clicked.connect(self.on_global_settings)
         self.ui.btn_minimize.clicked.connect(self.minimize_to_tray)
         
-        # 5. 初始化右键菜单 (新增)
+        # 5. 初始化右键菜单
         self.setup_list_context_menus()
         self.setup_sidebar_context_menu()
         
@@ -56,17 +62,101 @@ class MainWindowLogic(QObject):
         # 7. 启动定时器刷新状态
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_ui_status)
-        self.status_timer.start(1000) # 每秒刷新一次
+        self.status_timer.start(1000) 
 
-        # 8. 安装事件过滤器
+        # 8. 安装事件过滤器 (用于监听体力条双击)
         self.ui.installEventFilter(self)
+        # 👇 【关键】给体力条和它的文字标签也安装过滤器，确保点哪里都能触发
+        self.ui.progress_stamina.installEventFilter(self)
+        self.ui.label_stamina_val.installEventFilter(self)
+
+        # 8.5 动态添加 Stats 页面的控件
+        self.setup_stats_page()
+
+        # 9. 应用初始翻译
+        self.apply_translations()
+
+    def setup_stats_page(self):
+        """在 Stats 页面动态添加控件"""
+        # 假设 Stats 页面有一个垂直布局，或者我们找到 group_stamina 的父布局
+        # 如果 ui 文件里没有预留布局，我们可能需要自己加
+        # 这里假设 group_stamina 所在的布局是 page_stats 的主布局
+        
+        # 查找 group_stamina 的父 Widget
+        parent_widget = self.ui.group_stamina.parent()
+        layout = parent_widget.layout()
+        
+        if not layout:
+            layout = QVBoxLayout(parent_widget)
+            
+        # 创建一个新的 Widget 用于显示侧边栏信息 (不再使用 GroupBox)
+        self.group_sidebar = QWidget(parent_widget)
+        self.group_sidebar.setObjectName("group_sidebar")
+        vbox = QVBoxLayout(self.group_sidebar)
+        vbox.setContentsMargins(0, 10, 0, 10) # 增加上下间距
+        
+        # 创建 Label
+        self.label_idle_queues_title = QLabel(self.group_sidebar)
+        self.label_idle_queues_val = QLabel("?", self.group_sidebar)
+        self.label_idle_queues_val.setStyleSheet("font-weight: bold; color: green; font-size: 12pt;")
+        
+        # 使用 Grid Layout
+        hbox = QGridLayout()
+        hbox.addWidget(self.label_idle_queues_title, 0, 0)
+        hbox.addWidget(self.label_idle_queues_val, 0, 1)
+        hbox.setColumnStretch(1, 1)
+        
+        vbox.addLayout(hbox)
+        
+        # 添加到主布局 (在 group_stamina 后面)
+        layout.addWidget(self.group_sidebar)
+
+        # 添加英雄管理组件
+        self.hero_widget = HeroManagementWidget(parent_widget)
+        layout.addWidget(self.hero_widget)
+
+        # 添加弹簧，确保内容靠上
+        layout.addStretch()
+
+    def apply_translations(self):
+        """应用当前语言的翻译"""
+        # Sidebar
+        self.ui.btn_add_instance.setText(get_text("btn_add_instance"))
+        self.ui.btn_add_instance.setToolTip(get_text("btn_add_instance"))
+        self.ui.btn_refresh_adb.setText(get_text("btn_refresh_adb"))
+        self.ui.btn_global_settings.setText(get_text("btn_global_settings"))
+        
+        # Welcome
+        self.ui.label_welcome.setText(get_text("lbl_welcome"))
+        
+        # Header
+        self.update_ui_status() # 状态文本会在 update_ui_status 里更新
+        
+        # Tabs
+        self.ui.tabWidget.setTabText(0, get_text("tab_tasks"))
+        self.ui.tabWidget.setTabText(1, get_text("tab_logs"))
+        self.ui.tabWidget.setTabText(2, get_text("tab_stats"))
+        
+        # Stats Group
+        if hasattr(self.ui, 'group_stamina'):
+            self.ui.group_stamina.setTitle(get_text("group_stamina"))
+            
+        if hasattr(self, 'group_sidebar'):
+            # self.group_sidebar.setTitle("Sidebar Info") # 已移除 GroupBox 标题
+            self.label_idle_queues_title.setText(get_text("lbl_idle_queues"))
+
+        # Task List Titles
+        if hasattr(self.ui, 'lbl_running_title'):
+            self.ui.lbl_running_title.setText(get_text("lbl_running_title"))
+        if hasattr(self.ui, 'lbl_queue_title'):
+            self.ui.lbl_queue_title.setText(get_text("lbl_queue_title"))
+        if hasattr(self.ui, 'lbl_waiting_title'):
+            self.ui.lbl_waiting_title.setText(get_text("lbl_waiting_title"))
 
     def show(self):
-        """显示主窗口"""
         self.ui.show()
 
     def minimize_to_tray(self):
-        """最小化到托盘"""
         self.ui.hide()
         self.tray_icon.showMessage(
             "KSAS 已隐藏",
@@ -90,17 +180,12 @@ class MainWindowLogic(QObject):
         return ui
 
     def init_system_tray(self):
-        """初始化系统托盘 & 设置应用图标"""
         self.tray_icon = QSystemTrayIcon(self.ui)
-        
-        # 尝试加载 Logo
         icon_path = os.path.join("assets", "logo.png")
         if os.path.exists(icon_path):
             icon = QIcon(icon_path)
             self.tray_icon.setIcon(icon)
             self.ui.setWindowIcon(icon)
-            
-            # 设置侧边栏 Logo
             if hasattr(self.ui, 'label_logo'):
                 pixmap = QPixmap(icon_path)
                 self.ui.label_logo.setPixmap(pixmap.scaled(
@@ -108,19 +193,15 @@ class MainWindowLogic(QObject):
                     Qt.KeepAspectRatio, 
                     Qt.SmoothTransformation
                 ))
-                self.ui.label_logo.setText("") # 清除文字
+                self.ui.label_logo.setText("")
         else:
-            # Fallback: 使用标准图标
             self.tray_icon.setIcon(self.ui.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
 
-        # 托盘菜单
         tray_menu = QMenu()
-        
-        action_show = QAction("显示主界面", self.ui)
+        action_show = QAction(get_text("显示主界面"), self.ui) # TODO: Add to yaml
         action_show.triggered.connect(self.show_window)
         tray_menu.addAction(action_show)
-        
-        action_quit = QAction("退出程序", self.ui)
+        action_quit = QAction(get_text("退出程序"), self.ui) # TODO: Add to yaml
         action_quit.triggered.connect(self.quit_app)
         tray_menu.addAction(action_quit)
         
@@ -128,25 +209,82 @@ class MainWindowLogic(QObject):
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.show()
 
+    def rearrange_sidebar_buttons(self):
+        """将侧边栏底部的4个按钮改为 2x2 网格布局"""
+        # 1. 获取容器和旧布局
+        container = self.ui.sidebar_tools
+        old_layout = container.layout()
+        
+        # 2. 获取按钮对象 (它们已经在 ui 对象里了)
+        btn_add = self.ui.btn_add_instance
+        btn_refresh = self.ui.btn_refresh_adb
+        btn_settings = self.ui.btn_global_settings
+        btn_minimize = self.ui.btn_minimize
+        
+        # 3. 创建新布局
+        new_layout = QGridLayout()
+        new_layout.setSpacing(5)
+        new_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # 4. 添加按钮 (Row, Col)
+        # 第一行: 添加 | 刷新
+        new_layout.addWidget(btn_add, 0, 0)
+        new_layout.addWidget(btn_refresh, 0, 1)
+        # 第二行: 设置 | 最小化
+        new_layout.addWidget(btn_settings, 1, 0)
+        new_layout.addWidget(btn_minimize, 1, 1)
+        
+        # 5. 替换布局
+        # 注意：直接 setLayout 会警告已存在布局，最好先删除旧的
+        # 但 Qt 删除布局比较麻烦，这里用一个小技巧：创建一个新的临时 widget 替换掉原来的 sidebar_tools 内容
+        # 或者更简单：直接删除旧布局里的 item (虽然按钮还在内存里)，然后 deleteOldLayout
+        
+        QWidget().setLayout(old_layout) # 把旧布局的所有权转移给一个临时对象，从而销毁它
+        container.setLayout(new_layout)
+
+    # ===========================================
+    # 🖱️ 事件过滤器 (处理双击事件)
+    # ===========================================
     def eventFilter(self, obj, event):
-        """事件过滤器：拦截主窗口关闭事件"""
+        # 1. 拦截关闭事件 -> 最小化
         if obj == self.ui and event.type() == QEvent.Close:
-            # 只有在配置开启时才最小化到托盘
             if global_config.get("close_to_tray", False):
                 event.ignore()
                 self.ui.hide()
-                self.tray_icon.showMessage(
-                    "KSAS 已隐藏",
-                    "程序仍在后台运行，点击托盘图标可恢复。",
-                    QSystemTrayIcon.Information,
-                    2000
-                )
-                return True # 事件已处理
+                self.tray_icon.showMessage("KSAS 已隐藏", "点击托盘图标可恢复。", QSystemTrayIcon.Information, 2000)
+                return True
             else:
-                # 正常关闭退出
                 self.quit_app()
                 return False
+        
+        # 2. 拦截体力条的双击事件 -> 修改体力
+        if event.type() == QEvent.MouseButtonDblClick:
+            if obj == self.ui.progress_stamina or obj == self.ui.label_stamina_val:
+                self.do_edit_stamina()
+                return True
+
         return super().eventFilter(obj, event)
+
+    def do_edit_stamina(self):
+        """弹出对话框修改体力"""
+        if not self.current_instance_id: return
+        
+        store = self.manager.get_store(self.current_instance_id)
+        current_val = store.get_stat("stamina", 0)
+        
+        val, ok = QInputDialog.getInt(
+            self.ui, 
+            get_text("group_stamina"),
+            get_text("msg_input_stamina"),
+            value=current_val,
+            minValue=0, 
+            maxValue=10000
+        )
+        
+        if ok:
+            store.set_stat("stamina", val)
+            self.ui.text_log.append(f"<font color='#FF8C00'>[User] 手动更新体力: {val}</font>")
+            # UI 刷新会由 update_ui_status 自动接管，不需要手动 setProgressBar
 
     def show_window(self):
         self.ui.showNormal()
@@ -176,68 +314,73 @@ class MainWindowLogic(QObject):
     def on_instance_selected(self, item):
         instance_id = item.data(Qt.UserRole)
         
-        # 如果切换了实例，断开旧的信号连接（简单处理：这里暂不处理断连，直接连新的）
-        # 实际项目中可能需要更严谨的信号管理
-        
         self.current_instance_id = instance_id
         self.ui.stacked_pages.setCurrentWidget(self.ui.page_instance_detail)
         
-        # 更新标题
         all_insts = self.manager.get_all_instances()
         target = next((x for x in all_insts if x['id'] == instance_id), None)
         if target:
             self.ui.label_instance_name.setText(target.get('alias', instance_id))
             
-        # 加载任务配置卡片
         self.load_task_configs(instance_id)
         
-        # 连接日志信号
         store = self.manager.get_store(instance_id)
-        # 先断开防止重复连接
         try: store.sig_log_msg.disconnect()
         except: pass
         store.sig_log_msg.connect(self.append_log)
+
+        # 初始化并刷新英雄管理组件
+        if hasattr(self, 'hero_widget'):
+            hero_mgr = HeroManager(store)
+            self.hero_widget.set_manager(hero_mgr)
         
-        # 清空并加载现有日志 (这里可以做成读取 runtime.log 文件)
         self.ui.text_log.clear()
-        log_path = os.path.join("data", instance_id, "log", "ksas.log") # 注意 logging_setup 里配的文件名
+        log_path = os.path.join("data", instance_id, "log", "ksas.log") 
         if os.path.exists(log_path):
             try:
                 with open(log_path, "r", encoding="utf-8") as f:
-                    # 只读最后 100 行，防止太卡
-                    lines = f.readlines()[-100:]
+                    lines = f.readlines()[-50:]
                     for line in lines:
                         self.ui.text_log.append(f"<span style='color:gray'>{line.strip()}</span>")
             except Exception as e:
                 print(f"读取日志失败: {e}")
         self.update_ui_status()
 
-    def append_log(self, level, msg):
+    def append_log(self, level, full_msg):
         try:
-            # 拆分 ID 和 内容
             if "|||" in full_msg:
                 sender_id, real_msg = full_msg.split("|||", 1)
             else:
                 sender_id = "System"
                 real_msg = full_msg
                 
-            # 🛑 关键判断：只有当消息来源 == 当前选中的实例，才显示！
             if sender_id != self.current_instance_id:
                 return
                 
             color = "black"
-            # ... (颜色逻辑不变) ...
+            if "ERROR" in level: color = "red"
+            elif "WARNING" in level: color = "#FF8C00"
+            elif "DEBUG" in level: color = "gray"
             
             time_str = datetime.now().strftime("%H:%M:%S")
             html = f'<span style="color:gray">[{time_str}]</span> <span style="color:{color}">{real_msg}</span>'
-            self.ui.text_log.append(html)
             
-        except Exception:
-            pass
+            doc = self.ui.text_log.document()
+            while doc.blockCount() > 100:
+                cursor = self.ui.text_log.textCursor()
+                cursor.movePosition(QTextCursor.Start)
+                cursor.select(QTextCursor.BlockUnderCursor)
+                cursor.removeSelectedText()
+                cursor.deleteChar()
+
+            self.ui.text_log.append(html)
+            self.ui.text_log.ensureCursorVisible()
+            
+        except Exception as e:
+            print(f"Log Error: {e}")
 
     def load_task_configs(self, instance_id):
         layout = self.ui.scrollAreaWidgetContents.layout()
-        # 清空旧布局
         while layout.count():
             child = layout.takeAt(0)
             if child.widget():
@@ -247,14 +390,19 @@ class MainWindowLogic(QObject):
         store = self.manager.get_store(instance_id)
         task_classes = get_all_tasks()
         
-        # 动态生成任务卡片
         for task_cls in task_classes:
+            print(f"Loading config widget for task: {task_cls.__name__}") # DEBUG
             widget = TaskWidgetFactory.create_widget(task_cls)
             widget.load_from_store(store)
             layout.addWidget(widget)
             self.config_widgets.append(widget)
             
+            # DEBUG: 强制显示并打印信息
+            widget.show()
+            print(f"Widget created: {widget}, Visible: {widget.isVisible()}")
+
         layout.addStretch()
+        self.ui.scrollAreaWidgetContents.update()
 
     def save_current_configs(self):
         if not self.current_instance_id:
@@ -281,54 +429,45 @@ class MainWindowLogic(QObject):
         self.update_ui_status()
 
     def update_ui_status(self):
-        """每秒刷新的核心循环"""
         if not self.current_instance_id:
             return
         
-        # 1. 更新按钮状态
         sched = self.manager.get_scheduler(self.current_instance_id)
         if not sched: return
         
         is_running = sched.isRunning()
-        
-        # 防止按钮状态不同步
         if self.ui.btn_toggle_running.isChecked() != is_running:
             self.ui.btn_toggle_running.setChecked(is_running)
             
         if is_running:
-            self.ui.btn_toggle_running.setText("⏹ 停止挂机")
+            self.ui.btn_toggle_running.setText(get_text("btn_stop"))
             self.ui.btn_toggle_running.setProperty("state", "running")
-            self.ui.label_status_text.setText("Running")
+            self.ui.label_status_text.setText(get_text("lbl_status_running"))
             self.ui.label_status_icon.setText("🟢")
         else:
-            self.ui.btn_toggle_running.setText("▶ 启动挂机")
+            self.ui.btn_toggle_running.setText(get_text("btn_start"))
             self.ui.btn_toggle_running.setProperty("state", "stopped")
-            self.ui.label_status_text.setText("Idle")
+            self.ui.label_status_text.setText(get_text("lbl_status_idle"))
             self.ui.label_status_icon.setText("⚪")
         
-        # 强制刷新 QSS 样式
         self.ui.btn_toggle_running.style().unpolish(self.ui.btn_toggle_running)
         self.ui.btn_toggle_running.style().polish(self.ui.btn_toggle_running)
 
-        # 2. 更新资源栏
         store = self.manager.get_store(self.current_instance_id)
         stamina = store.get_stat("stamina", 0)
         self.ui.progress_stamina.setMaximum(200)
         self.ui.progress_stamina.setValue(int(stamina))
-        self.ui.progress_stamina.setTextVisible(False) 
+        self.ui.progress_stamina.setTextVisible(False)
         self.ui.label_stamina_val.setText(f"{stamina} / 200")
-        
-        resources = store.get_stat("resources", {})
-        self.ui.val_food.setText(self._format_number(resources.get("food", 0)))
-        self.ui.val_wood.setText(self._format_number(resources.get("wood", 0)))
-        self.ui.val_stone.setText(self._format_number(resources.get("stone", 0)))
-        self.ui.val_iron.setText(self._format_number(resources.get("iron", 0)))
 
-        # 3. 更新任务列表 (Running / Queue / Waiting)
+        # 更新侧边栏统计
+        idle_queues = store.get_stat("sidebar.idle_queues", "?")
+        if hasattr(self, 'label_idle_queues_val'):
+            self.label_idle_queues_val.setText(str(idle_queues))
+
         self.update_task_lists(sched)
 
     def update_task_lists(self, sched):
-        """根据调度器状态刷新中间的三个列表"""
         self.ui.list_running.clear()
         self.ui.list_queue.clear()
         self.ui.list_waiting.clear()
@@ -337,29 +476,24 @@ class MainWindowLogic(QObject):
 
         store = self.manager.get_store(self.current_instance_id)
         
-        # 获取当前正在运行的任务名
         current_task_name = store.get_runtime("current_task", "Idle")
         is_running_logic = store.get_runtime("is_running", False)
 
-        # --- 填充 "运行中" ---
         if is_running_logic and "休眠" not in current_task_name and "待机" not in current_task_name and "Idle" not in current_task_name:
-             self.ui.list_running.addItem(f"🔥 {current_task_name}")
+             self.ui.list_running.addItem(f"{get_text('lbl_running_title')} {current_task_name}")
         elif is_running_logic:
-             self.ui.list_running.addItem(f"💤 {current_task_name}")
+             self.ui.list_running.addItem(f"{get_text('lbl_waiting_title')} {current_task_name}")
         
-        # --- 准备数据 ---
         now = datetime.now()
-        queue_tasks = []   # 时间到了
-        waiting_tasks = [] # 时间没到
+        queue_tasks = []
+        waiting_tasks = []
 
         for task in sched.tasks:
             if not task.enabled:
                 continue
             
-            # 格式化时间
             time_str = task.next_run.strftime("%H:%M:%S") if task.next_run.year > 2000 else "立即"
             
-            # 已经在运行的就不显示在队列里了
             if task.name == current_task_name and "休眠" not in current_task_name:
                 continue
 
@@ -368,163 +502,131 @@ class MainWindowLogic(QObject):
             else:
                 waiting_tasks.append((task, time_str))
 
-        # --- 填充 "队列中" (按优先级排序) ---
-        # priority 越小越优先
         queue_tasks.sort(key=lambda x: x[0].priority)
         for task, t_str in queue_tasks:
             item = QListWidgetItem(f"[{task.priority}] {task.name}")
-            item.setData(Qt.UserRole, task.name) # 存任务名方便右键操作
+            item.setData(Qt.UserRole, task.name)
             self.ui.list_queue.addItem(item)
 
-        # --- 填充 "等待中" (按时间排序) ---
         waiting_tasks.sort(key=lambda x: x[0].next_run)
         for task, t_str in waiting_tasks:
             item = QListWidgetItem(f"{task.name}  ({t_str})")
             item.setData(Qt.UserRole, task.name)
             self.ui.list_waiting.addItem(item)
 
-    # ===========================================
-    # 🖱️ 右键菜单逻辑 (Context Menu)
-    # ===========================================
     def setup_list_context_menus(self):
-        """设置列表的右键菜单策略"""
         for lst in [self.ui.list_queue, self.ui.list_waiting]:
             lst.setContextMenuPolicy(Qt.CustomContextMenu)
             lst.customContextMenuRequested.connect(self.on_task_context_menu)
 
     def on_task_context_menu(self, pos):
-        """处理右键点击"""
-        sender_list = self.sender() # 获取是哪个列表发出的信号
+        sender_list = self.sender()
         item = sender_list.itemAt(pos)
-        
         if not item: return
         
         task_name = item.data(Qt.UserRole)
-        
         menu = QMenu()
-        action_run = QAction(f"🚀 立即执行 {task_name}", self.ui)
+        action_run = QAction(f"{get_text('menu_run_now')} {task_name}", self.ui)
         action_run.triggered.connect(lambda: self.reset_task_next_run(task_name))
         menu.addAction(action_run)
-        
         menu.exec(QCursor.pos())
 
     def reset_task_next_run(self, task_name):
-        """重置任务时间 -> 立即执行"""
         if not self.current_instance_id: return
-        
         store = self.manager.get_store(self.current_instance_id)
-        # 清空 next_run，调度器会认为是公元1年，从而立即执行
         store.set_stat(f"tasks.{task_name}.next_run", "")
-        
         self.ui.text_log.append(f"<font color='#1e90ff'>[User] 已强制插队任务: {task_name}</font>")
     
     def setup_sidebar_context_menu(self):
-        """设置左侧实例列表的右键菜单"""
         self.ui.list_instances.setContextMenuPolicy(Qt.CustomContextMenu)
         self.ui.list_instances.customContextMenuRequested.connect(self.on_sidebar_menu)
 
     def on_sidebar_menu(self, pos):
         item = self.ui.list_instances.itemAt(pos)
         if not item: return
-        
         instance_id = item.data(Qt.UserRole)
         
-        # 创建菜单
         menu = QMenu()
-        
-        # ✏️ 修改地址
-        action_edit = QAction("✏️ 编辑实例信息 (Edit Info)", self.ui)
-        action_edit.triggered.connect(lambda: self.do_edit_instance(instance_id)) 
+        action_edit = QAction(get_text("menu_edit_info"), self.ui)
+        action_edit.triggered.connect(lambda: self.do_edit_instance(instance_id))
         menu.addAction(action_edit)
 
-        # 📂 打开文件夹
-        action_folder = QAction("📂 打开数据目录 (Open Folder)", self.ui)
+        action_folder = QAction(get_text("menu_open_folder"), self.ui)
         action_folder.triggered.connect(lambda: self.do_open_folder(instance_id))
         menu.addAction(action_folder)
         
         menu.addSeparator()
         
-        # 🗑️ 删除实例
-        action_del = QAction("🗑️ 删除实例 (Delete)", self.ui)
-        # 红色字体警示
-        # action_del.setStyleSheet("color: red;") # Qt Menu styleSheet 有点难搞，先不管颜色
+        action_del = QAction(get_text("menu_delete"), self.ui)
         action_del.triggered.connect(lambda: self.do_delete_instance(instance_id))
         menu.addAction(action_del)
-        
         menu.exec(QCursor.pos())
 
     def do_edit_instance(self, instance_id):
-        """弹出对话框修改 Name 和 Serial"""
-        
-        # 1. 获取旧数据，用来填在框里
         store = self.manager.get_store(instance_id)
-        # 从注册表里拿现在的名字（别名）
         all_insts = self.manager.get_all_instances()
         target = next((x for x in all_insts if x['id'] == instance_id), None)
         
         old_name = target['name'] if target else instance_id
         old_serial = store.get_cfg("meta.serial", "")
+        old_diana = store.get_cfg("modules.general.diana_level", 0)
+        old_march = store.get_cfg("modules.general.total_march_slots", 5)
         
-        # 2. 弹出对话框
-        dialog = EditInstanceDialog(self.ui, current_name=old_name, current_serial=old_serial)
+        dialog = EditInstanceDialog(
+            self.ui,
+            current_name=old_name,
+            current_serial=old_serial,
+            current_diana=old_diana,
+            current_march_slots=old_march
+        )
         
         if dialog.exec():
-            new_name, new_serial = dialog.get_data()
-            
-            # 简单校验
+            new_name, new_serial, new_diana, new_march = dialog.get_data()
             if not new_name or not new_serial:
-                QMessageBox.warning(self.ui, "无效输入", "名称和地址不能为空！")
+                QMessageBox.warning(self.ui, get_text("msg_error"), get_text("msg_input_invalid"))
                 return
 
-            # 3. 调用 Manager 更新
-            # (注意：instance_manager.py 里的 update_instance 方法要确保已存在)
-            self.manager.update_instance(instance_id, new_serial=new_serial, new_alias=new_name)
-            
-            self.ui.text_log.append(f"<font color='blue'>[System] 实例信息已更新: {new_name} ({new_serial})</font>")
+            self.manager.update_instance(
+                instance_id,
+                new_serial=new_serial,
+                new_alias=new_name,
+                new_diana_level=new_diana,
+                new_march_slots=new_march
+            )
+            self.ui.text_log.append(f"<font color='blue'>[System] 实例信息已更新: {new_name} (Diana Lv.{new_diana}, March: {new_march})</font>")
 
     def do_delete_instance(self, instance_id):
-        """删除实例确认"""
-        # 获取名字用于提示
         all_insts = self.manager.get_all_instances()
         target = next((x for x in all_insts if x['id'] == instance_id), None)
         name = target['name'] if target else instance_id
 
         reply = QMessageBox.question(
             self.ui, 
-            "确认删除", 
-            f"确定要删除实例 [{name}] 吗？\n\n"
-            "• 配置文件将被移除\n"
-            "• 统计数据将被清空\n"
-            "• 此操作不可恢复！",
-            QMessageBox.Yes | QMessageBox.No, 
+            get_text("msg_confirm_del"),
+            get_text("msg_del_warn", name),
+            QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
-            # 如果正在运行，先停止
             sched = self.manager.get_scheduler(instance_id)
             if sched and sched.isRunning():
                 sched.stop_scheduler()
                 
             self.manager.delete_instance(instance_id)
             
-            # 如果删的是当前选中的，清空右侧
             if self.current_instance_id == instance_id:
                 self.current_instance_id = None
-                self.ui.stacked_pages.setCurrentIndex(0) # 回到欢迎页
+                self.ui.stacked_pages.setCurrentIndex(0) 
             
-            QMessageBox.information(self.ui, "提示", "删除成功")
+            QMessageBox.information(self.ui, get_text("msg_success"), get_text("msg_success"))
 
     def do_open_folder(self, instance_id):
-        """打开该实例的文件夹"""
         store = self.manager.get_store(instance_id)
         if store:
             path = os.path.abspath(store.base_dir)
             os.startfile(path)
 
-    # ===========================================
-    # 🔢 数字格式化
-    # ===========================================
     def _format_number(self, num):
         try:
             n = float(num)
@@ -540,22 +642,23 @@ class MainWindowLogic(QObject):
     def on_add_instance(self):
         dialog = AddInstanceDialog(self.ui)
         if dialog.exec():
-            name, serial = dialog.get_data()
+            name, serial, diana, march = dialog.get_data()
             if not name or not serial:
-                QMessageBox.warning(self.ui, "错误", "名称和 Serial 不能为空！")
+                QMessageBox.warning(self.ui, get_text("msg_error"), get_text("msg_input_invalid"))
                 return
             
-            success, msg = self.manager.create_instance(name, serial)
+            success, msg = self.manager.create_instance(name, serial, diana, march)
             if success:
-                QMessageBox.information(self.ui, "成功", f"实例 '{name}' 创建成功！")
+                QMessageBox.information(self.ui, get_text("msg_success"), f"Instance '{name}' created!")
             else:
-                QMessageBox.critical(self.ui, "失败", f"创建失败: {msg}")
+                QMessageBox.critical(self.ui, get_text("msg_error"), f"Failed: {msg}")
 
     def on_refresh_adb(self):
-        """刷新实例列表"""
         self.refresh_instances()
         self.ui.statusbar.showMessage("实例列表已刷新", 2000)
 
     def on_global_settings(self):
         dialog = SettingsDialog(self.ui)
-        dialog.exec()
+        if dialog.exec():
+            # 如果设置里改了语言，这里需要刷新界面
+            self.apply_translations()
