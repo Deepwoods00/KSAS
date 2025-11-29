@@ -1,6 +1,16 @@
 from tasks.base_task import BaseTask
 
 class RallyTask(BaseTask):
+    config_schema = [
+        {
+            "key": "enable",
+            "type": "checkbox",
+            "label": "Enable Rally Task",
+            "default": False,
+            "menu": "Combat"
+        }
+    ]
+
     @property
     def name(self):
         return "Rally"

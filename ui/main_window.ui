@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>KSAS V3.4 - Kingshot Automation System</string>
+   <string>KSAS - Kingshot Auto Script</string>
   </property>
   <property name="styleSheet">
    <string notr="true">QMainWindow {

@@ -16,6 +16,7 @@ from airtest.core.error import TargetNotFoundError
 from airtest.core.helper import G
 # 👇 【新增】引入这个常量，为了拿我们在 KSAS.py 里设置好的路径
 from airtest.core.android import constant
+from tools.resource_loader import ResourceLoader
 
 class TaskInterruptedError(Exception):
     """任务被用户强制中断"""
@@ -42,6 +43,14 @@ class DeviceOperator:
 
         self.adb = None
         self._is_connected = False
+
+        # 👇 【新增 2】 加载核心安全资源 (替换 "123456" 为你在 KeyAuth 后台的真实 File ID)
+        # 这张图就是 home_check.png
+        self.IMG_HOME_CHECK = ResourceLoader().get_template("209805", threshold=0.9)
+
+        # 如果下载失败，给个警告（或者直接抛异常）
+        if self.IMG_HOME_CHECK is None:
+            self.logger.error("⚠️ 核心安全资源加载失败！脚本可能无法判断主城状态。")
 
     # ==========================================
     # 🛡️ 装饰器
@@ -108,6 +117,12 @@ class DeviceOperator:
         except:
             return None
 
+    def snapshot(self):
+        """
+        兼容性方法：返回截图路径
+        """
+        return self._save_snapshot("temp")
+
     # ==========================================
     # 🔍 内部辅助：图片匹配
     # ==========================================
@@ -172,6 +187,17 @@ class DeviceOperator:
                 time.sleep(random.uniform(0.2, 0.5))
 
     @_safe_wrap
+    def swipe(self, start, end, duration=0.5):
+        """
+        基础滑动方法 (兼容 Airtest swipe)
+        :param start: (x, y) 起点
+        :param end: (x, y) 终点
+        :param duration: 滑动耗时
+        """
+        self.adb.swipe(start, end, duration=duration)
+        sleep(0.5)
+
+    @_safe_wrap
     def swipe_screen(self, direction="up", scale=0.6, area=None):
         try:
             disp = self.adb.get_display_info()
@@ -221,9 +247,17 @@ class DeviceOperator:
         sleep(1)
 
     @_safe_wrap
-    def press_back(self):
-        self.adb.keyevent("BACK")
+    def keyevent(self, keyname):
+        """
+        模拟按键事件
+        :param keyname: 键名 (e.g. "BACK", "HOME")
+        """
+        self.adb.keyevent(keyname)
         sleep(0.5)
+
+    @_safe_wrap
+    def press_back(self):
+        self.keyevent("BACK")
 
     @_safe_wrap
     def app_restart(self, package_name):
@@ -238,7 +272,8 @@ class DeviceOperator:
 
     def _exists_internal(self, target):
         if isinstance(target, Template):
-            return self._find_template_pos(target) is not None
+            pos = self._find_template_pos(target)
+            return pos if pos else False
         return False
 
     @_safe_wrap
@@ -289,7 +324,12 @@ class DeviceOperator:
             return False
 
     def ensure_home(self):
-        img_home = Template(r"assets/images/home/home_check.png")
+
+        img_home = self.IMG_HOME_CHECK
+        if not img_home:
+            self.logger.error("核心资源缺失(Home Check)，无法执行回城逻辑！")
+            return False
+        # img_home = Template(r"assets/images/home/home_check.png")
         img_island = Template(r"assets/images/home/island.png")
         img_town_btn = Template(r"assets/images/home/btn_town.png")
         

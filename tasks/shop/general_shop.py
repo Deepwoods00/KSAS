@@ -1,6 +1,16 @@
 from tasks.base_task import BaseTask
 
 class ShopTask(BaseTask):
+    config_schema = [
+        {
+            "key": "enable",
+            "type": "checkbox",
+            "label": "Enable Shop Task",
+            "default": False,
+            "menu": "Shop"
+        }
+    ]
+
     @property
     def name(self):
         return "Shop"

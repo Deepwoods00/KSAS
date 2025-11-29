@@ -126,9 +126,9 @@ class HeroManagementWidget(QWidget):
         lbl_owned.setStyleSheet("font-weight: bold;")
         grid.addWidget(lbl_owned, 0, 2)
         
-        lbl_queue = QLabel(get_text("lbl_hero_queue", "队列"))
-        lbl_queue.setStyleSheet("font-weight: bold;")
-        grid.addWidget(lbl_queue, 0, 3)
+        lbl_status = QLabel(get_text("lbl_hero_queue", "状态"))
+        lbl_status.setStyleSheet("font-weight: bold;")
+        grid.addWidget(lbl_status, 0, 3)
 
         row = 1
         for hero_name in heroes:
@@ -143,16 +143,18 @@ class HeroManagementWidget(QWidget):
             chk_owned.stateChanged.connect(lambda state, h=hero_name: self.on_owned_changed(h, state))
             grid.addWidget(chk_owned, row, 2, alignment=Qt.AlignCenter)
 
-            # 3. 队列信息 (只读 Label)
-            lbl_queue_val = QLabel(get_text("val_idle", "空闲"))
-            lbl_queue_val.setAlignment(Qt.AlignCenter)
-            # lbl_queue_val.setFixedWidth(60)
-            grid.addWidget(lbl_queue_val, row, 3)
+            # 3. 状态信息 (可点击切换的 Button 或 Label)
+            # 这里为了简化操作，使用 QPushButton，点击切换 忙碌/空闲
+            btn_status = QPushButton(get_text("val_idle", "空闲"))
+            btn_status.setCheckable(True) # 选中表示忙碌
+            btn_status.setFixedWidth(60)
+            btn_status.clicked.connect(lambda checked, h=hero_name: self.on_status_changed(h, checked))
+            grid.addWidget(btn_status, row, 3)
 
             # 存储控件引用以便后续更新
             self.widgets[hero_name] = {
                 "chk": chk_owned,
-                "lbl_queue": lbl_queue_val
+                "btn_status": btn_status
             }
             row += 1
 
@@ -183,25 +185,32 @@ class HeroManagementWidget(QWidget):
             is_owned = info.get("owned", False)
             controls["chk"].setChecked(is_owned)
             
-            # 更新队列 Label
-            queue_idx = info.get("queue")
-            if queue_idx is None or queue_idx == 0:
-                controls["lbl_queue"].setText(get_text("val_idle", "空闲"))
-                controls["lbl_queue"].setStyleSheet("color: gray;")
-            else:
-                controls["lbl_queue"].setText(str(queue_idx))
-                controls["lbl_queue"].setStyleSheet("color: green; font-weight: bold;")
+            # 更新状态 Button
+            state = info.get("state", "idle")
+            is_busy = (state == "busy")
             
-            # 如果未拥有，禁用队列显示 (变灰)
-            controls["lbl_queue"].setEnabled(is_owned)
+            btn = controls["btn_status"]
+            btn.setChecked(is_busy)
+            self.update_status_btn_style(btn, is_busy)
+            
+            # 如果未拥有，禁用状态切换
+            btn.setEnabled(is_owned)
 
         self.block_signals(False)
+
+    def update_status_btn_style(self, btn, is_busy):
+        if is_busy:
+            btn.setText(get_text("val_busy", "忙碌"))
+            btn.setStyleSheet("background-color: #ffcccc; color: red; border: 1px solid red;")
+        else:
+            btn.setText(get_text("val_idle", "空闲"))
+            btn.setStyleSheet("color: green;")
 
     def block_signals(self, block):
         """批量屏蔽/恢复信号"""
         for controls in self.widgets.values():
             controls["chk"].blockSignals(block)
-            # Label 没有 blockSignals 需求
+            controls["btn_status"].blockSignals(block)
 
     def on_owned_changed(self, hero_name, state):
         """处理拥有状态变更"""
@@ -210,14 +219,24 @@ class HeroManagementWidget(QWidget):
         is_owned = (state == Qt.Checked.value)
         self.hero_manager.update_hero_status(hero_name, owned=is_owned)
         
-        # 联动：如果取消拥有，禁用队列显示
+        # 联动：如果取消拥有，禁用状态按钮并重置为空闲
         controls = self.widgets.get(hero_name)
         if controls:
-            controls["lbl_queue"].setEnabled(is_owned)
+            btn = controls["btn_status"]
+            btn.setEnabled(is_owned)
             if not is_owned:
-                # 如果取消拥有，逻辑上应该也清空队列信息，但这里只是 UI 展示，
-                # 实际数据更新由 hero_manager 处理。
-                # 如果需要联动清空队列数据：
-                self.hero_manager.update_hero_status(hero_name, queue_index=0)
-                controls["lbl_queue"].setText(get_text("val_idle", "空闲"))
-                controls["lbl_queue"].setStyleSheet("color: gray;")
+                self.hero_manager.update_hero_status(hero_name, state="idle")
+                btn.setChecked(False)
+                self.update_status_btn_style(btn, False)
+
+    def on_status_changed(self, hero_name, checked):
+        """处理状态变更 (点击按钮)"""
+        if not self.hero_manager: return
+        
+        new_state = "busy" if checked else "idle"
+        self.hero_manager.update_hero_status(hero_name, state=new_state)
+        
+        # 更新按钮样式
+        controls = self.widgets.get(hero_name)
+        if controls:
+            self.update_status_btn_style(controls["btn_status"], checked)

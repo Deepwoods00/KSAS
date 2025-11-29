@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
+import time
 from datetime import datetime
+
 from PySide6.QtWidgets import (
     QMainWindow, QListWidgetItem, QMessageBox, QWidget,
     QSystemTrayIcon, QMenu, QStyle, QInputDialog, QGridLayout,
-    QGroupBox, QLabel, QVBoxLayout # 👈 新增导入
+    QGroupBox, QLabel, QVBoxLayout
 )
-from PySide6.QtCore import QTimer, Slot, Signal, QFile, QIODevice, QObject, Qt, QEvent
+from PySide6.QtCore import (
+    QTimer, Slot, Signal, QFile, QIODevice, QObject, Qt, QEvent, QThread
+)
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtGui import QPixmap, QColor, QIcon, QAction, QCursor, QTextCursor
 
@@ -21,9 +25,92 @@ from config import global_config
 from i18n.i18n import get_text
 from ui.hero_management_widget import HeroManagementWidget
 from game.hero_manager import HeroManager
+from ui.collapsible_box import CollapsibleBox
 
+# ============================================================================
+# 💓 KeyAuth 心跳线程 (定义在主逻辑类之前或之后均可，这里放在前面方便管理)
+# ============================================================================
+class KeyAuthHeartbeatThread(QThread):
+    """
+    KeyAuth 心跳保活线程 (带冗余重试机制)
+    策略:
+    1. 正常状态：每 30 分钟检测一次。
+    2. 失败状态：进入重试模式，每 3 分钟检测一次。
+    3. 判定死亡：连续 3 次失败后，发送死亡信号。
+    """
+    sig_auth_failed = Signal(str)  # 彻底失败信号
+
+    def __init__(self, keyauth_app):
+        super().__init__()
+        self.api = keyauth_app
+        self._is_running = True
+        self.failed_attempts = 0 # 当前连续失败次数
+        
+        # 配置
+        self.INTERVAL_NORMAL = 30 * 60  # 正常间隔 30分钟
+        self.INTERVAL_RETRY = 3 * 60    # 重试间隔 3分钟
+        self.MAX_RETRIES = 3            # 最大重试次数
+
+    def run(self):
+        # 刚启动时，先等待一个周期再检查（因为登录时已经检查过了）
+        self.smart_sleep(self.INTERVAL_NORMAL)
+
+        while self._is_running:
+            try:
+                # 执行检测
+                # print(f"[Heartbeat] Checking... (Failures: {self.failed_attempts})")
+                is_valid = self.api.check()
+                
+                if is_valid:
+                    # 成功：重置计数器，等待 30 分钟
+                    if self.failed_attempts > 0:
+                        print("[Heartbeat] Connection restored.")
+                    self.failed_attempts = 0
+                    self.smart_sleep(self.INTERVAL_NORMAL)
+                else:
+                    # 失败：计数+1
+                    self.failed_attempts += 1
+                    print(f"[Heartbeat] Check failed ({self.failed_attempts}/{self.MAX_RETRIES})")
+                    
+                    if self.failed_attempts >= self.MAX_RETRIES:
+                        # 超过最大重试次数，发送死亡信号，结束循环
+                        self.sig_auth_failed.emit(f"Heartbeat failed {self.MAX_RETRIES} times continuously.")
+                        break
+                    else:
+                        # 还没死透，等待 3 分钟重试
+                        self.smart_sleep(self.INTERVAL_RETRY)
+                        
+            except Exception as e:
+                # 网络异常也算作失败
+                self.failed_attempts += 1
+                print(f"[Heartbeat] Exception: {e}")
+                
+                if self.failed_attempts >= self.MAX_RETRIES:
+                    self.sig_auth_failed.emit(f"Network exception: {str(e)}")
+                    break
+                else:
+                    self.smart_sleep(self.INTERVAL_RETRY)
+
+    def smart_sleep(self, seconds):
+        """
+        分段休眠，确保程序关闭时线程能迅速响应退出，而不是傻等30分钟
+        """
+        for _ in range(seconds):
+            if not self._is_running:
+                break
+            time.sleep(1)
+
+    def stop(self):
+        self._is_running = False
+        self.wait()
+
+
+# ============================================================================
+# 🖥️ 主窗口逻辑
+# ============================================================================
 class MainWindowLogic(QObject):
-    def __init__(self):
+    def __init__(self, keyauth_app=None):
+        print(">>> 正在初始化 MainWindowLogic，参数:", keyauth_app) # 👈 加这句测试
         super().__init__()
         
         # 1. 加载 UI
@@ -76,12 +163,62 @@ class MainWindowLogic(QObject):
         # 9. 应用初始翻译
         self.apply_translations()
 
+        # 10. 启动 KeyAuth 心跳线程
+        self.keyauth_thread = None
+        if keyauth_app:
+            self.start_heartbeat(keyauth_app)
+
+    # ------------------------------------------------------------------------
+    # 💓 心跳相关逻辑
+    # ------------------------------------------------------------------------
+    def start_heartbeat(self, keyauth_app):
+        self.keyauth_thread = KeyAuthHeartbeatThread(keyauth_app)
+        # 连接到新的紧急处理槽函数
+        self.keyauth_thread.sig_auth_failed.connect(self.on_auth_failed_emergency)
+        self.keyauth_thread.start()
+        print("[System] Security heartbeat started (Interval: 30m, Redundancy: 3x3m).")
+
+    def on_auth_failed_emergency(self, reason):
+        """
+        当心跳彻底失败（重试3次后）触发的紧急处理逻辑
+        """
+        print(f"[Security] EMERGENCY STOP: {reason}")
+        
+        # A. 停止所有运行中的实例
+        running_count = 0
+        all_schedulers = self.manager.schedulers
+        
+        for instance_id, sched in all_schedulers.items():
+            if sched.isRunning():
+                # 强制停止调度器
+                sched.stop_scheduler()
+                running_count += 1
+                
+                # 在对应实例的日志里写一句
+                store = self.manager.get_store(instance_id)
+                if store:
+                    store.push_log("🛑 授权验证失败，强制停止任务！", "ERROR")
+
+        # B. 更新 UI 状态 (调用现有的 update_ui_status 来刷新按钮状态)
+        self.update_ui_status()
+        
+        # C. 禁用核心按钮，防止用户再次点击启动
+        self.ui.btn_toggle_running.setEnabled(False)
+        self.ui.btn_toggle_running.setText("授权失效")
+        self.ui.btn_toggle_running.setStyleSheet("background-color: gray; color: white;")
+        
+        # D. 弹出对话框报错 (保持窗口开启)
+        QMessageBox.critical(
+            self.ui, 
+            "Authorization Failed", 
+            f"安全检测失败，已强制停止所有任务。\n\n原因: {reason}\n\n请检查网络连接或重启软件。"
+        )
+
+    # ------------------------------------------------------------------------
+    # 🧩 界面布局与初始化
+    # ------------------------------------------------------------------------
     def setup_stats_page(self):
         """在 Stats 页面动态添加控件"""
-        # 假设 Stats 页面有一个垂直布局，或者我们找到 group_stamina 的父布局
-        # 如果 ui 文件里没有预留布局，我们可能需要自己加
-        # 这里假设 group_stamina 所在的布局是 page_stats 的主布局
-        
         # 查找 group_stamina 的父 Widget
         parent_widget = self.ui.group_stamina.parent()
         layout = parent_widget.layout()
@@ -142,7 +279,6 @@ class MainWindowLogic(QObject):
             self.ui.group_stamina.setTitle(get_text("group_stamina"))
             
         if hasattr(self, 'group_sidebar'):
-            # self.group_sidebar.setTitle("Sidebar Info") # 已移除 GroupBox 标题
             self.label_idle_queues_title.setText(get_text("lbl_idle_queues"))
 
         # Task List Titles
@@ -198,10 +334,10 @@ class MainWindowLogic(QObject):
             self.tray_icon.setIcon(self.ui.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
 
         tray_menu = QMenu()
-        action_show = QAction(get_text("显示主界面"), self.ui) # TODO: Add to yaml
+        action_show = QAction(get_text("显示主界面"), self.ui) 
         action_show.triggered.connect(self.show_window)
         tray_menu.addAction(action_show)
-        action_quit = QAction(get_text("退出程序"), self.ui) # TODO: Add to yaml
+        action_quit = QAction(get_text("退出程序"), self.ui) 
         action_quit.triggered.connect(self.quit_app)
         tray_menu.addAction(action_quit)
         
@@ -235,15 +371,11 @@ class MainWindowLogic(QObject):
         new_layout.addWidget(btn_minimize, 1, 1)
         
         # 5. 替换布局
-        # 注意：直接 setLayout 会警告已存在布局，最好先删除旧的
-        # 但 Qt 删除布局比较麻烦，这里用一个小技巧：创建一个新的临时 widget 替换掉原来的 sidebar_tools 内容
-        # 或者更简单：直接删除旧布局里的 item (虽然按钮还在内存里)，然后 deleteOldLayout
-        
         QWidget().setLayout(old_layout) # 把旧布局的所有权转移给一个临时对象，从而销毁它
         container.setLayout(new_layout)
 
     # ===========================================
-    # 🖱️ 事件过滤器 (处理双击事件)
+    # 🖱️ 事件过滤器 (处理双击事件等)
     # ===========================================
     def eventFilter(self, obj, event):
         # 1. 拦截关闭事件 -> 最小化
@@ -292,6 +424,9 @@ class MainWindowLogic(QObject):
 
     def quit_app(self):
         self.tray_icon.hide()
+        # 停止心跳线程
+        if hasattr(self, 'keyauth_thread') and self.keyauth_thread:
+            self.keyauth_thread.stop()
         sys.exit(0)
 
     def on_tray_icon_activated(self, reason):
@@ -390,19 +525,94 @@ class MainWindowLogic(QObject):
         store = self.manager.get_store(instance_id)
         task_classes = get_all_tasks()
         
+        # 动态分类
+        categories = {}
+        
+        # 默认分类映射 (作为后备)
+        default_category_map = {
+            "GeneralSettings": "General",
+            "WolfTask": "Combat",
+            "BeastTask": "Combat",
+            "RallyTask": "Combat",
+            "IntelTask": "Daily",
+            "GatherTask": "Daily",
+            "ShopTask": "Shop",
+            "TestSidebarTask": "Other",
+            "ExampleTask": "Other"
+        }
+
         for task_cls in task_classes:
-            print(f"Loading config widget for task: {task_cls.__name__}") # DEBUG
-            widget = TaskWidgetFactory.create_widget(task_cls)
-            widget.load_from_store(store)
-            layout.addWidget(widget)
-            self.config_widgets.append(widget)
+            # 1. 尝试从 config_schema 获取 menu
+            menu = "Other"
+            if hasattr(task_cls, 'config_schema'):
+                for item in task_cls.config_schema:
+                    if 'menu' in item:
+                        menu = item['menu']
+                        break
             
-            # DEBUG: 强制显示并打印信息
-            widget.show()
-            print(f"Widget created: {widget}, Visible: {widget.isVisible()}")
+            # 2. 如果没找到，尝试使用默认映射
+            if menu == "Other":
+                menu = default_category_map.get(task_cls.__name__, "Other")
+            
+            if menu not in categories:
+                categories[menu] = []
+            categories[menu].append(task_cls)
+
+        # 排序分类: General 总是第一，Other 总是最后，其他按字母顺序
+        sorted_cats = sorted(categories.keys())
+        if "General" in sorted_cats:
+            sorted_cats.remove("General")
+            sorted_cats.insert(0, "General")
+        if "Other" in sorted_cats:
+            sorted_cats.remove("Other")
+            sorted_cats.append("Other")
+        
+        for cat_name in sorted_cats:
+            tasks = categories[cat_name]
+            if not tasks: continue
+            
+            # 获取翻译后的分类名称
+            trans_key = f"cat_{cat_name.lower()}"
+            display_name = get_text(trans_key)
+            if display_name == trans_key:
+                display_name = cat_name
+
+            # 创建容器布局
+            if cat_name == "General":
+                # General 不折叠，直接添加
+                container_layout = layout
+            else:
+                # 其他分类使用折叠框
+                box = CollapsibleBox(title=display_name)
+                layout.addWidget(box)
+                
+                # 折叠框的内容布局
+                content_widget = QWidget()
+                vbox = QVBoxLayout(content_widget)
+                vbox.setContentsMargins(5, 5, 5, 5)
+                box.setContentLayout(vbox)
+                container_layout = vbox
+
+                # 当分类折叠时，自动折叠所有子任务
+                box.toggled_state.connect(lambda c, l=vbox: self.on_category_toggled(c, l))
+            
+            for task_cls in tasks:
+                widget = TaskWidgetFactory.create_widget(task_cls)
+                widget.load_from_store(store)
+                container_layout.addWidget(widget)
+                self.config_widgets.append(widget)
+                widget.show()
 
         layout.addStretch()
         self.ui.scrollAreaWidgetContents.update()
+
+    def on_category_toggled(self, checked, layout):
+        """当分类折叠时，折叠其下的所有任务卡片"""
+        if not checked: # Collapsed
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item.widget() and hasattr(item.widget(), 'collapse'):
+                    item.widget().collapse()
 
     def save_current_configs(self):
         if not self.current_instance_id:
@@ -436,7 +646,9 @@ class MainWindowLogic(QObject):
         if not sched: return
         
         is_running = sched.isRunning()
+        # 更新按钮状态（如果代码与按钮状态不一致时）
         if self.ui.btn_toggle_running.isChecked() != is_running:
+            # 在紧急停止情况下，这里可能会把按钮重置为 unchecked，这符合预期
             self.ui.btn_toggle_running.setChecked(is_running)
             
         if is_running:
@@ -445,7 +657,10 @@ class MainWindowLogic(QObject):
             self.ui.label_status_text.setText(get_text("lbl_status_running"))
             self.ui.label_status_icon.setText("🟢")
         else:
-            self.ui.btn_toggle_running.setText(get_text("btn_start"))
+            # 如果是因为授权失败被禁用，文字会被 on_auth_failed_emergency 覆盖，这里需要保留
+            if self.ui.btn_toggle_running.isEnabled():
+                self.ui.btn_toggle_running.setText(get_text("btn_start"))
+            
             self.ui.btn_toggle_running.setProperty("state", "stopped")
             self.ui.label_status_text.setText(get_text("lbl_status_idle"))
             self.ui.label_status_icon.setText("⚪")

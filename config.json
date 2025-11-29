@@ -3,5 +3,6 @@
     "close_to_tray": false,
     "auto_connect": true,
     "adb_path": "",
-    "use_internal_adb": true
+    "use_internal_adb": true,
+    "license_key": "KEYAUTH-8c5ePr-Bs89jy"
 }

@@ -50,11 +50,14 @@ class BaseTask:
         except ValueError:
             return datetime.min 
 
-    def set_next_run(self, seconds=None):
-        if seconds is None:
-            seconds = self.data.get_cfg(f"modules.{self.name.lower()}.interval", self.default_interval)
-        
-        future_time = datetime.now() + timedelta(seconds=int(seconds))
+    def set_next_run(self, seconds=None, timestamp=None):
+        if timestamp:
+            future_time = datetime.fromtimestamp(timestamp)
+        else:
+            if seconds is None:
+                seconds = self.data.get_cfg(f"modules.{self.name.lower()}.interval", self.default_interval)
+            future_time = datetime.now() + timedelta(seconds=int(seconds))
+            
         time_str = future_time.strftime("%Y-%m-%d %H:%M:%S")
         
         self.data.set_stat(f"tasks.{self.name}.next_run", time_str)
@@ -74,7 +77,11 @@ class BaseTask:
             success = False
         
         if success:
-            self.set_next_run()
+            # 如果任务执行成功，但被禁用了（例如 WolfTask 次数耗尽），就不再安排下次运行
+            if self.enabled:
+                self.set_next_run()
+            else:
+                self.logger.info(f"任务 {self.name} 已禁用，停止调度")
         else:
             self.set_next_run(seconds=300)
             

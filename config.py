@@ -11,7 +11,8 @@ class GlobalConfig:
         "close_to_tray": False,   # 默认关闭：点击关闭按钮直接退出
         "auto_connect": True,    # 启动时自动连接
         "adb_path": "",          # 自定义 ADB 路径
-        "use_internal_adb": True # 是否使用内置 ADB
+        "use_internal_adb": True, # 是否使用内置 ADB
+        "license_key": ""        # KeyAuth 卡密
     }
 
     def __new__(cls, *args, **kwargs):

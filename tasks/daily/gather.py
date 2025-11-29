@@ -1,6 +1,16 @@
 from tasks.base_task import BaseTask
 
 class GatherTask(BaseTask):
+    config_schema = [
+        {
+            "key": "enable",
+            "type": "checkbox",
+            "label": "Enable Gather Task",
+            "default": False,
+            "menu": "Daily"
+        }
+    ]
+
     @property
     def name(self):
         return "Gather"

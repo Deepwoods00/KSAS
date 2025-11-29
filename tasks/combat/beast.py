@@ -1,6 +1,16 @@
 from tasks.base_task import BaseTask
 
 class BeastTask(BaseTask):
+    config_schema = [
+        {
+            "key": "enable",
+            "type": "checkbox",
+            "label": "Enable Beast Task",
+            "default": False,
+            "menu": "Combat"
+        }
+    ]
+
     @property
     def name(self):
         return "BeastTask"

@@ -29,12 +29,12 @@ class HeroManager:
         """
         self.data = data
 
-    def update_hero_status(self, hero_name, owned=None, queue_index=None):
+    def update_hero_status(self, hero_name, owned=None, state=None):
         """
         更新英雄状态
         :param hero_name: 英雄代号 (必须在 HERO_LIST 中)
         :param owned: bool, 是否拥有 (None 表示不更新此项) -> 存入 config
-        :param queue_index: int, 所在队列编号 (None 表示不更新此项, 0 表示不在任何队列) -> 存入 stats
+        :param state: str, 状态 "idle" / "busy" (None 表示不更新此项) -> 存入 stats
         """
         if hero_name not in self.HERO_LIST:
             return
@@ -43,21 +43,21 @@ class HeroManager:
         if owned is not None:
             self.data.set_cfg(f"heroes.{hero_name}", owned)
         
-        # 2. 更新队列信息 (Stats)
-        if queue_index is not None:
-            self.data.set_stat(f"heroes.{hero_name}", queue_index)
+        # 2. 更新状态信息 (Stats)
+        if state is not None:
+            self.data.set_stat(f"heroes.{hero_name}", state)
 
     def get_hero_info(self, hero_name):
         """
         获取单个英雄的完整信息
-        :return: dict { "owned": bool, "queue": int/None }
+        :return: dict { "owned": bool, "state": str }
         """
         # 拥有状态从 config 读取
         owned = self.data.get_cfg(f"heroes.{hero_name}", False)
-        # 队列信息从 stats 读取
-        queue = self.data.get_stat(f"heroes.{hero_name}", 0)
+        # 状态信息从 stats 读取
+        state = self.data.get_stat(f"heroes.{hero_name}", "idle")
         
-        return {"owned": owned, "queue": queue}
+        return {"owned": owned, "state": state}
 
     def get_owned_heroes(self):
         """
@@ -72,24 +72,24 @@ class HeroManager:
                 owned_list.append(name)
         return owned_list
 
-    def get_heroes_in_queue(self, queue_index):
+    def get_heroes_by_state(self, target_state="idle"):
         """
-        获取指定队列中的英雄列表
-        :param queue_index: 队列编号
+        获取指定状态的英雄列表
+        :param target_state: "idle" or "busy"
         :return: list [hero_name, ...]
         """
-        # 从 stats 读取所有英雄队列信息
+        # 从 stats 读取所有英雄状态信息
         all_heroes_stats = self.data.get_stat("heroes", {})
-        in_queue = []
-        for name, q_idx in all_heroes_stats.items():
-            if q_idx == queue_index:
-                in_queue.append(name)
-        return in_queue
+        result = []
+        for name, state in all_heroes_stats.items():
+            if state == target_state:
+                result.append(name)
+        return result
 
     def is_hero_available(self, hero_name):
         """
-        检查英雄是否可用 (已拥有且不在任何队列中)
+        检查英雄是否可用 (已拥有且空闲)
         """
         info = self.get_hero_info(hero_name)
-        # 拥有且队列为0(空闲)
-        return info.get("owned", False) and (info.get("queue") == 0)
+        # 拥有且状态为空闲
+        return info.get("owned", False) and (info.get("state") == "idle")

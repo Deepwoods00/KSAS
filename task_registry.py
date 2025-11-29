@@ -6,10 +6,10 @@ from tasks.combat.beast import BeastTask
 from tasks.combat.wolf import WolfTask
 from tasks.combat.rally import RallyTask
 from tasks.daily.intel import IntelTask
-from tasks.daily.chest import ChestTask
 from tasks.daily.gather import GatherTask
 from tasks.shop.general_shop import ShopTask
 from tasks.test_sidebar import TestSidebarTask
+from tasks.daily.alliance import AllianceTechTask, AllianceChestTask
 
 # 2. 把它们放进一个列表
 TASK_CLASSES = [
@@ -19,9 +19,10 @@ TASK_CLASSES = [
     WolfTask,
     RallyTask,
     IntelTask,
-    ChestTask,
     GatherTask,
     ShopTask,
+    AllianceTechTask,
+    AllianceChestTask,
 ]
 
 def get_all_tasks():
