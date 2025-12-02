@@ -192,6 +192,7 @@ class InstanceManager(QObject):
             if new_march_slots is not None:
                 store.set_cfg("modules.general.total_march_slots", int(new_march_slots))
         
+        self.logger.info(get_text("log_instance_conf_updated", instance_id))
         self.sig_instance_list_changed.emit()
         return True
 

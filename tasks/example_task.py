@@ -1,6 +1,7 @@
 # tasks/example_task.py
 import time
 from tasks.base_task import BaseTask
+from i18n.i18n import get_text
 
 class ExampleTask(BaseTask):
     @property
@@ -19,9 +20,9 @@ class ExampleTask(BaseTask):
         """
         模拟干活
         """
-        self.logger.info(">>> ExampleTask 开始执行！正在模拟点击...")
+        self.logger.info(get_text("log_example_task_start"))
         time.sleep(2) # 假装在点屏幕
-        self.logger.info(">>> 点击完成，正在识别...")
+        self.logger.info(get_text("log_example_task_clicking"))
         time.sleep(1) # 假装在 OCR
-        self.logger.info(">>> 任务完成！")
+        self.logger.info(get_text("log_example_task_finished"))
         return True

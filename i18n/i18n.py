@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import yaml
 import logging
-from config import global_config
+# from config import global_config  <-- 移除顶层导入
 
 logger = logging.getLogger("i18n")
 
@@ -24,7 +25,12 @@ def load_language(lang_code):
         return _TRANSLATION_CACHE[short_lang]
 
     # 获取当前文件所在目录
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    if getattr(sys, 'frozen', False):
+        # 打包后，资源文件位于 sys._MEIPASS/i18n
+        base_dir = os.path.join(sys._MEIPASS, 'i18n')
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        
     file_path = os.path.join(base_dir, f"{short_lang}.yaml")
     
     data = {}
@@ -32,11 +38,11 @@ def load_language(lang_code):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
-            logger.info(f"已加载语言包: {short_lang}.yaml")
+            logger.info(f"Loaded language pack: {short_lang}.yaml")
         except Exception as e:
-            logger.error(f"加载语言包失败 {file_path}: {e}")
+            logger.error(f"Failed to load language pack {file_path}: {e}")
     else:
-        logger.warning(f"语言包不存在: {file_path}")
+        logger.warning(f"Language pack not found: {file_path}")
         
     _TRANSLATION_CACHE[short_lang] = data
     return data
@@ -56,8 +62,13 @@ def get_text(key, *args):
     :param args: 如果文本中有 {} 占位符，用这些参数填充
     Usage: get_text("msg_del_warn", "InstanceA")
     """
-    # 1. 从全局配置读取语言
-    current_lang_code = global_config.get("language", "zh_CN")
+    # 1. 从全局配置读取语言 (延迟导入以避免循环引用)
+    try:
+        from config import global_config
+        current_lang_code = global_config.get("language", "zh_CN")
+    except ImportError:
+        current_lang_code = "zh_CN"
+
     short_lang = "zh" if "zh" in current_lang_code else "en"
     
     # 2. 获取对应语言的字典
@@ -85,7 +96,7 @@ def get_text(key, *args):
             # 确保 text 是字符串
             return str(text).format(*args)
         except Exception as e:
-            logger.warning(f"格式化翻译文本失败 [{key}]: {e}")
+            logger.warning(f"Failed to format translation text [{key}]: {e}")
             return str(text)
             
     return str(text)

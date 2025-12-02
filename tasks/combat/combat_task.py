@@ -1,6 +1,7 @@
 from tasks.base_task import BaseTask
 from airtest.core.api import Template
 from i18n.i18n import get_text
+from basic import TaskInterruptedError
 import cv2
 
 class CombatTask(BaseTask):
@@ -75,12 +76,12 @@ class CombatTask(BaseTask):
         :param heroes: list, 英雄名称列表 (e.g. ['diana', 'jessie'])
         """
         if not heroes:
-            self.logger.info("未指定英雄，跳过选将")
+            self.logger.info(get_text("log_no_hero_specified"))
             return
 
         # 0. 检测是否存在 add.png
         if not self.device.exists(self.IMG_ADD):
-            self.logger.info("检测到已有英雄上阵，执行清除操作")
+            self.logger.info(get_text("log_clearing_heroes"))
             # 1. 点击清除按钮 (237, 260)
             self.device.click((237, 260))
             self.device.sleep(2.5)
@@ -88,16 +89,16 @@ class CombatTask(BaseTask):
             # 1.1 再次确认 add.png
             # 注意：exists 方法内部会调用 _find_template_pos，它会重新截图
             if not self.device.exists(self.IMG_ADD):
-                self.logger.warning("清除英雄失败，尝试继续...")
+                self.logger.warning(get_text("log_clear_hero_failed"))
         
         # 2. 点击第一个英雄栏 (174, 374)
-        self.logger.info("点击第一个英雄栏")
+        self.logger.info(get_text("log_click_first_hero_slot"))
         self.device.click((174, 374))
         self.device.sleep(1) # 等待英雄选择界面加载
 
         # 3. 循环选择英雄
         for i, hero_name in enumerate(heroes):
-            self.logger.info(f"正在寻找英雄: {hero_name} ({i+1}/{len(heroes)})")
+            self.logger.info(get_text("log_searching_hero", hero_name, i+1, len(heroes)))
             
             # 构建小头像 Template
             img_hero_small = Template(f"assets/images/heroes/{hero_name}_small.png", threshold=0.85)
@@ -106,14 +107,14 @@ class CombatTask(BaseTask):
             # 尝试寻找 (最多拖动3次)
             for attempt in range(4): # 0 (初始) + 3 (拖动)
                 if self.device.exists(img_hero_small):
-                    self.logger.info(f"找到英雄: {hero_name}")
+                    self.logger.info(get_text("log_hero_found", hero_name))
                     self.device.click(img_hero_small)
                     self.device.sleep(0.5)
                     found = True
                     break
                 
                 if attempt < 3:
-                    self.logger.info(f"未找到 {hero_name}，尝试向下拖动 ({attempt+1}/3)")
+                    self.logger.info(get_text("log_hero_not_found_scroll", hero_name, attempt+1))
                     # 起始点 (358, 905) -> 终止点 (358, 608)
                     self.device.swipe((358, 905), (358, 608), duration=1.5)
                     self.device.sleep(1) # 等待滚动停止
@@ -122,7 +123,7 @@ class CombatTask(BaseTask):
                 raise Exception(f"无法找到目标英雄: {hero_name}")
 
             # 找到并点击后，点击确认按钮 (440, 1000)
-            self.logger.info("点击确认按钮")
+            self.logger.info(get_text("log_click_confirm"))
             self.device.click((440, 1000))
             self.device.sleep(0.5) # 等待跳转到下一个位置或返回
             
@@ -132,7 +133,7 @@ class CombatTask(BaseTask):
         # 4. 英雄选择完毕后按一次 back 按键返回出击页面
         # 如果选完最后一个英雄，界面可能还在英雄选择页(如果还有空位)，或者自动返回了？
         # 根据描述 "英雄选择完毕后按一次back按键返回出击页面"，假设需要手动返回
-        self.logger.info("英雄选择完毕，返回出击页面")
+        self.logger.info(get_text("log_hero_selection_done"))
         self.device.keyevent("BACK")
         self.device.sleep(0.5)
 
@@ -172,99 +173,45 @@ class CombatTask(BaseTask):
         self.device.sleep(1)
         
         if self.device.exists(img_home_check) and self.device.exists(img_btn_town):
-            self.logger.info("出击成功 (检测到主界面特征)")
+            self.logger.info(get_text("log_attack_success"))
             return True
         else:
-            self.logger.warning("出击失败 (未检测到主界面特征)")
+            self.logger.warning(get_text("log_attack_failed"))
             return False
 
-    def check_stamina_sufficient(self, area=None):
+    def check_stamina_sufficient(self, cost):
         """
-        检查体力是否足够
-        逻辑：截取指定区域，检测是否存在红色像素
-        :param area: (x1, y1, x2, y2) 默认为 (545, 1213, 620, 1245)
-        :return: bool, True=足够(无红色), False=不足(有红色)
+        检查体力是否足够 (基于缓存 + Double Check)
+        
+        :param cost: int, 需要消耗的体力值
+        :return:
+            - True: 体力充足，可以直接继续
+            - "RESTART": 体力充足，但因为执行了回城更新，需要任务层重启流程
+            - int: 体力不足，返回缺少的体力值 (missing_stamina)
         """
-        import cv2
-        import numpy as np
-        import os
+        # 1. Check Cached Stamina
+        current_stamina = self.data.get_stat("stamina", 0)
         
-        # 区域坐标 (x1, y1, x2, y2)
-        if area is None:
-            area = (545, 1213, 620, 1245)
+        if current_stamina >= cost:
+            self.logger.info(get_text("log_stamina_sufficient_cached", current_stamina, cost))
+            return True
+            
+        # 2. Double Check (Go Home -> Update -> Check Again)
+        self.logger.warning(get_text("log_stamina_low_cached", current_stamina, cost))
+        self.logger.info(get_text("log_trigger_stamina_update"))
         
-        try:
-            # snapshot() 返回临时文件路径
-            screen_path = self.device.snapshot()
-            
-            # 如果 snapshot 返回的是 bytes (某些模式下)，需要处理
-            if isinstance(screen_path, bytes):
-                # 这里假设它返回的是路径。如果是 bytes，通常需要 decode 或者直接用 cv2.imdecode
-                # 但 Airtest 的 snapshot 通常保存文件
-                pass
-            
-            if not screen_path or not os.path.exists(screen_path):
-                self.logger.error("截图失败或文件不存在")
-                return False
-            
-            img = cv2.imread(screen_path)
-            if img is None:
-                self.logger.error("无法读取截图文件")
-                return False
-                
-            # 裁剪区域 (y1:y2, x1:x2)
-            # 注意 cv2 是 (height, width) 即 (y, x)
-            # 确保坐标不越界
-            h, w = img.shape[:2]
-            x1, y1, x2, y2 = area
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-            
-            crop_img = img[y1:y2, x1:x2]
-            
-            if crop_img.size == 0:
-                self.logger.error("裁剪区域为空")
-                return False
-
-            # 转换为 HSV 颜色空间更容易检测红色
-            hsv = cv2.cvtColor(crop_img, cv2.COLOR_BGR2HSV)
-            
-            # 定义红色的范围
-            # 红色在 HSV 中有两个区间：[0, 10] 和 [170, 180]
-            lower_red1 = np.array([0, 70, 50])
-            upper_red1 = np.array([10, 255, 255])
-            lower_red2 = np.array([170, 70, 50])
-            upper_red2 = np.array([180, 255, 255])
-            
-            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-            mask = mask1 + mask2
-            
-            # 计算非零像素点数量
-            red_pixels = cv2.countNonZero(mask)
-            
-            # 阈值设为 5 个像素，避免噪点
-            if red_pixels > 5:
-                self.logger.info(f"检测到红色像素 ({red_pixels})，体力不足")
-                
-                # 触发体力更新逻辑
-                self.logger.info("触发体力更新流程...")
-                
-                # 1. 退出当前战斗窗口，返回主页
-                self.device.ensure_home()
-                
-                # 2. 执行 update_stamina
-                self.update_stamina()
-                
-                return False
-            else:
-                self.logger.info("未检测到红色像素，体力足够")
-                return True
-                
-        except Exception as e:
-            self.logger.error(f"检查体力时出错: {e}")
-            # 出错时保守起见返回 False (不足)，避免无限重试
-            return False
+        self.device.ensure_home()
+        self.update_stamina()
+        
+        new_stamina = self.data.get_stat("stamina", 0)
+        
+        if new_stamina >= cost:
+            self.logger.info(get_text("log_stamina_sufficient_updated", new_stamina, cost))
+            return "RESTART"
+        else:
+            missing = cost - new_stamina
+            self.logger.warning(get_text("log_stamina_insufficient_final", new_stamina, cost, missing))
+            return missing
 
     def detect_current_heroes(self):
         """
@@ -277,7 +224,7 @@ class CombatTask(BaseTask):
         heroes_dir = "assets/images/heroes"
         
         if not os.path.exists(heroes_dir):
-            self.logger.warning(f"英雄图片目录不存在: {heroes_dir}")
+            self.logger.warning(get_text("log_hero_dir_missing", heroes_dir))
             return []
             
         # 遍历目录下的所有文件
@@ -292,7 +239,7 @@ class CombatTask(BaseTask):
                 
                 # 检测是否存在
                 if self.device.exists(tpl):
-                    self.logger.info(f"检测到英雄: {hero_name}")
+                    self.logger.info(get_text("log_hero_detected", hero_name))
                     detected_heroes.append(hero_name)
                     
         return detected_heroes
@@ -310,7 +257,7 @@ class CombatTask(BaseTask):
 
             # Step 0.5: Check for btn_go_map
             if self.device.exists(self.IMG_BTN_GO_MAP):
-                self.logger.info("Found btn_go_map, clicking...")
+                self.logger.info(get_text("log_found_go_map"))
                 self.device.click(self.IMG_BTN_GO_MAP)
                 self.device.sleep(1.0)
             
@@ -318,7 +265,7 @@ class CombatTask(BaseTask):
             if self.device.exists(self.IMG_INTEL):
                 self.device.click(self.IMG_INTEL)
             else:
-                self.logger.warning("Intel icon not found on home screen")
+                self.logger.warning(get_text("log_intel_icon_missing"))
                 retry_count += 1
                 continue
                 
@@ -329,13 +276,13 @@ class CombatTask(BaseTask):
             # Area: 600, 25, 660, 53
             screen_path = self.device.snapshot()
             if not screen_path:
-                self.logger.error("Snapshot failed")
+                self.logger.error(get_text("log_snapshot_failed"))
                 retry_count += 1
                 continue
                 
             img = cv2.imread(screen_path)
             if img is None:
-                self.logger.error("Failed to read snapshot")
+                self.logger.error(get_text("log_read_snapshot_failed"))
                 retry_count += 1
                 continue
                 
@@ -370,10 +317,10 @@ class CombatTask(BaseTask):
             
             # Check Empty
             if not results:
-                self.logger.warning(f"No numbers found in stamina area. Retry {retry_count}/{max_retries}")
+                self.logger.warning(get_text("log_stamina_ocr_failed", retry_count, max_retries))
                 retry_count += 1
                 continue
-                
+            
             # Sort by X coordinate
             results.sort(key=lambda x: x[0])
             
@@ -382,12 +329,12 @@ class CombatTask(BaseTask):
             try:
                 stamina_val = int(stamina_str)
             except ValueError:
-                self.logger.error(f"Failed to parse stamina: {stamina_str}")
+                self.logger.error(get_text("log_stamina_parse_failed", stamina_str))
                 retry_count += 1
                 continue
                 
             # Save
-            self.logger.info(f"Updated Stamina: {stamina_val}")
+            self.logger.info(get_text("log_stamina_updated", stamina_val))
             self.data.set_stat("stamina", stamina_val)
             
             # Return to home to be safe (optional, but good practice if we left it in Intel screen)
@@ -396,6 +343,6 @@ class CombatTask(BaseTask):
             # End
             return True
             
-        self.logger.error("Failed to update stamina after retries")
+        self.logger.error(get_text("log_stamina_update_failed_final"))
         self.device.ensure_home()
         return False

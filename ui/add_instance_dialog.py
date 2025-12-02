@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QComboBox, QPushButton, QMessageBox, QFormLayout, QSpinBox
+    QLineEdit, QComboBox, QPushButton, QMessageBox, QFormLayout, QSpinBox, QAbstractSpinBox
 )
 from airtest.core.android.adb import ADB
 import os
@@ -21,14 +21,14 @@ class AddInstanceDialog(QDialog):
         
         # 实例名称
         self.line_name = QLineEdit()
-        self.line_name.setPlaceholderText("e.g. Main, Alt1...")
+        self.line_name.setPlaceholderText(get_text("ph_instance_name"))
         form.addRow(get_text("lbl_name"), self.line_name)
 
         # 设备序列号
         hbox_serial = QHBoxLayout()
         self.combo_serial = QComboBox()
         self.combo_serial.setEditable(True)
-        self.combo_serial.setPlaceholderText("Serial/IP:Port")
+        self.combo_serial.setPlaceholderText(get_text("ph_serial"))
         
         btn_refresh = QPushButton("🔄")
         btn_refresh.setToolTip(get_text("btn_refresh_adb"))
@@ -44,21 +44,23 @@ class AddInstanceDialog(QDialog):
         self.spin_diana.setRange(0, 5)
         self.spin_diana.setValue(0)
         self.spin_diana.setSuffix(" Lv")
+        self.spin_diana.setButtonSymbols(QAbstractSpinBox.NoButtons)
         form.addRow(get_text("lbl_diana"), self.spin_diana)
 
         # 行军队列
         self.spin_march = QSpinBox()
         self.spin_march.setRange(1, 6)
         self.spin_march.setValue(5)
+        self.spin_march.setButtonSymbols(QAbstractSpinBox.NoButtons)
         form.addRow(get_text("lbl_march_slots"), self.spin_march)
         
         layout.addLayout(form)
 
         # 按钮
         btn_layout = QHBoxLayout()
-        btn_ok = QPushButton("确定")
+        btn_ok = QPushButton(get_text("btn_confirm"))
         btn_ok.clicked.connect(self.accept)
-        btn_cancel = QPushButton("取消")
+        btn_cancel = QPushButton(get_text("btn_cancel_simple"))
         btn_cancel.clicked.connect(self.reject)
         
         btn_layout.addStretch()
@@ -99,14 +101,14 @@ class AddInstanceDialog(QDialog):
                     count += 1
             
             if count == 0:
-                self.combo_serial.setPlaceholderText("未检测到在线设备")
+                self.combo_serial.setPlaceholderText(get_text("ph_no_device"))
             else:
-                self.combo_serial.setPlaceholderText("请选择设备...")
+                self.combo_serial.setPlaceholderText(get_text("ph_select_device"))
                 self.combo_serial.showPopup() # 自动弹出列表方便选择
 
         except Exception as e:
             print(f"Error refreshing devices: {e}")
-            QMessageBox.warning(self, "ADB 错误", f"无法获取设备列表:\n{e}")
+            QMessageBox.warning(self, get_text("msg_adb_error"), get_text("msg_get_device_fail", e))
 
     def get_data(self):
         return (

@@ -13,7 +13,7 @@ class Sidebar:
     def __init__(self, device, data):
         self.device = device
         self.data = data
-        self.logger = logging.getLogger("Game.Sidebar")
+        self.logger = logging.getLogger(f"{data.instance_id}.Game.Sidebar")
         
         # 初始化空闲队列数量 (从统计数据中读取，默认为 0)
         self.idle_march_count = self.data.get_stat("sidebar.idle_queues", 0)
@@ -51,12 +51,12 @@ class Sidebar:
            - 否: 点击 btn_go_map.png -> 等待 1.5s -> 点击 (4, 550)
         2. 检查 sidebar_check.png 是否出现
         """
-        self.logger.info("Expanding sidebar...")
+        self.logger.info(get_text("log_sidebar_expanding"))
         
         
 
         for i in range(3):
-            self.logger.info(f"Expand attempt {i+1}/3")
+            self.logger.info(get_text("log_sidebar_expand_attempt", i+1))
             # 0. 确保在主界面
             self.device.ensure_home()
 
@@ -72,7 +72,7 @@ class Sidebar:
                     self.device.sleep(1.5)
                     self.device.click(self.POS_EXPAND_BTN)
                 else:
-                    self.logger.warning("Neither btn_town nor btn_go_map found, skipping click.")
+                    self.logger.warning(get_text("log_sidebar_no_buttons"))
 
             # 2. 结果验证
             self.device.sleep(1.0) # 等待动画

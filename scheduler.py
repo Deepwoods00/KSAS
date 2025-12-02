@@ -9,6 +9,7 @@ from PySide6.QtCore import QThread, Signal
 from logging_setup import GuiLogHandler, setup_file_logging
 # 引入异常
 from basic import TaskInterruptedError
+from i18n.i18n import get_text
 
 class InstanceScheduler(QThread):
     """
@@ -21,6 +22,7 @@ class InstanceScheduler(QThread):
     
     def __init__(self, instance_id, device, data, task_classes):
         super().__init__()
+        self.setObjectName(f"Scheduler_{instance_id}")
         self.instance_id = instance_id
         self.device = device
         self.data = data
@@ -59,7 +61,7 @@ class InstanceScheduler(QThread):
                 task_obj = TaskCls(device, data)
                 self.tasks.append(task_obj)
             except Exception as e:
-                self.logger.error(f"任务 {TaskCls.__name__} 初始化失败: {e}")
+                self.logger.error(get_text("log_task_init_failed", TaskCls.__name__, e))
 
         # 7. 绑定中断回调 (直接绑定到当前实例的方法)
         self.device.interrupt_callback = self._check_interrupt
@@ -102,38 +104,38 @@ class InstanceScheduler(QThread):
             self.data.set_runtime("is_running", True)
             self._wake_event.clear()
             self.start()
-            self.logger.info("调度器已启动")
+            self.logger.info(get_text("log_scheduler_started"))
 
     def stop_scheduler(self):
         if self.isRunning():
             self._is_running = False
             self.data.set_runtime("is_running", False)
             self._wake_event.set() # 唤醒退出
-            self.logger.info("正在停止调度器...")
+            self.logger.info(get_text("log_scheduler_stopping"))
             self.wait()
             
             self.instance_root_logger.removeHandler(self.gui_handler)
-            self.logger.info("调度器已停止")
+            self.logger.info(get_text("log_scheduler_stopped"))
 
     # ==========================================
     # 🔄 核心循环 (大脑)
     # ==========================================
 
     def run(self):
-        self.logger.info("调度器线程已启动")
+        self.logger.info(get_text("log_scheduler_thread_started"))
         
         # 1. 飞行前安检
         if not self.device.connect():
-            self.logger.error("❌ 无法连接设备，调度器自动停止。")
+            self.logger.error(get_text("log_device_connect_fail_stop"))
             self.data.set_runtime("is_running", False)
             return
 
         # 🏠 启动时先尝试回到首页 (初始化状态)
         try:
-            self.logger.info("正在初始化游戏状态 (回到首页)...")
+            self.logger.info(get_text("log_init_game_state"))
             self.device.ensure_home()
         except Exception as e:
-            self.logger.warning(f"初始化回城失败: {e} (将尝试继续运行)")
+            self.logger.warning(get_text("log_init_home_fail", e))
 
         while self._is_running:
             self._wake_event.clear()
@@ -159,7 +161,7 @@ class InstanceScheduler(QThread):
                     # 时间到！体力+1
                     new_val = current_stamina + 1
                     self.data.set_stat("stamina", new_val)
-                    self.logger.info(f"💧 体力自然回复 +1 (当前: {new_val})")
+                    self.logger.info(get_text("log_stamina_recover", new_val))
                     
                     # 闹钟往后顺延 300秒 (保持节奏)
                     self._next_stamina_tick += timedelta(seconds=300)
@@ -198,7 +200,7 @@ class InstanceScheduler(QThread):
                 try:
                     winner.execute()
                 except TaskInterruptedError:
-                    self.logger.warning(f"🛑 任务 {winner.name} 被用户强制中断！")
+                    self.logger.warning(get_text("log_task_interrupted", winner.name))
                     self.data.set_runtime("current_task", "Interrupted")
                     
                     # 🏠 中断后尝试回到首页 (善后处理)
@@ -207,13 +209,18 @@ class InstanceScheduler(QThread):
                     self.device.interrupt_callback = None
                     
                     try:
-                        self.logger.info("正在尝试回到首页...")
+                        self.logger.info(get_text("log_trying_home"))
                         self.device.ensure_home()
                     except Exception as e:
-                        self.logger.error(f"回城失败: {e}")
+                        self.logger.error(get_text("log_home_fail", e))
                     finally:
                         # 恢复回调 (虽然线程马上要退出了，但保持状态一致性是个好习惯)
                         self.device.interrupt_callback = original_callback
+
+                    # ⏰ 重新安排任务 (推迟 60 秒)
+                    # 这样任务会回到队列中，而不是停留在 "运行中" 状态
+                    winner.set_next_run(seconds=60)
+                    self.logger.info(get_text("log_task_rescheduled", winner.name, 60))
 
                     # 中断后不需要 continue，直接让 while 循环去判断 self._is_running 即可
                 
@@ -226,13 +233,13 @@ class InstanceScheduler(QThread):
                 # 谁先到，就睡到谁那个时候醒
                 
                 wait_seconds = 3600 # 默认睡很久
-                status_msg = "无任务，待机中..."
+                status_msg = get_text("status_idle")
 
                 # 1. 考虑任务
                 if next_task_time:
                     delta_task = (next_task_time - now).total_seconds()
                     wait_seconds = min(wait_seconds, delta_task)
-                    status_msg = f"休眠 (任务 {int(delta_task)}s 后)"
+                    status_msg = get_text("status_sleep_task", int(delta_task))
 
                 # 2. 考虑体力 (为了准时加体力，不能睡过头)
                 if self._next_stamina_tick:
@@ -241,8 +248,8 @@ class InstanceScheduler(QThread):
                     delta_stamina = max(0.1, delta_stamina)
                     wait_seconds = min(wait_seconds, delta_stamina)
                     # 如果体力马上就要回了，状态栏也可以显示一下
-                    if delta_stamina < wait_seconds: 
-                        status_msg = f"休眠 (回体 {int(delta_stamina)}s 后)"
+                    if delta_stamina < wait_seconds:
+                        status_msg = get_text("status_sleep_stamina", int(delta_stamina))
 
                 # 确保至少睡一点点，防止逻辑死循环跑太快
                 wait_seconds = max(0.5, wait_seconds)
@@ -250,4 +257,12 @@ class InstanceScheduler(QThread):
                 self.data.set_runtime("current_task", status_msg)
                 
                 # 智能休眠
+                wake_time = now + timedelta(seconds=wait_seconds)
+                wake_time_str = wake_time.strftime("%H:%M:%S")
+                self.logger.info(get_text("log_scheduler_sleep_until", wake_time_str, status_msg))
                 self._wake_event.wait(wait_seconds)
+        
+        # 线程结束时的清理工作
+        self.data.set_runtime("current_task", "Stopped")
+        self.data.set_runtime("is_running", False)
+        self.logger.info(get_text("log_scheduler_stopped"))

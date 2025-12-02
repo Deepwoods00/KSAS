@@ -2,6 +2,7 @@
 import os
 import json
 import logging
+from i18n.i18n import get_text
 
 class GlobalConfig:
     _instance = None
@@ -38,14 +39,14 @@ class GlobalConfig:
                     for key, val in data.items():
                         self.config[key] = val
             except Exception as e:
-                self.logger.error(f"加载全局配置失败: {e}")
+                self.logger.error(get_text("log_load_config_failed", e))
 
     def save(self):
         try:
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            self.logger.error(f"保存全局配置失败: {e}")
+            self.logger.error(get_text("log_save_config_failed", e))
 
     def get(self, key, default=None):
         return self.config.get(key, default)

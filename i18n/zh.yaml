@@ -1,37 +1,208 @@
+# ==============================================================================
+# 🇨🇳 中文语言包 (zh_CN)
+# ==============================================================================
+
+# ==========================================
+# 1. 通用按钮与提示 (Common)
+# ==========================================
+btn_confirm: "确定"
+btn_cancel: "取消"
+btn_cancel_simple: "取消"
+btn_save: "保存"
+btn_browse: "浏览..."
+msg_success: "成功"
+msg_error: "错误"
+msg_input_invalid: "输入无效：名称或地址不能为空！"
+
+# ==========================================
+# 2. 主界面 UI (Main Window UI)
+# ==========================================
 # --- 侧边栏 (Sidebar) ---
-btn_add_instance: "➕ 添加实例"
-btn_refresh_adb: "🔄"
-btn_global_settings: "⚙️ 全局设置"
-btn_minimize: "🔽"
+btn_add_instance: "➕添加实例"
+btn_refresh_adb: "🔄搜索设备"
+btn_global_settings: "⚙️全局设置"
+btn_minimize: "🔽后台运行"
 
 # --- 欢迎页 (Welcome) ---
 lbl_welcome: "请从左侧选择一个实例，或点击 ➕ 添加新设备"
 
-# --- 实例详情页 - 头部 (Header) ---
+# --- 实例详情页头部 (Instance Header) ---
 lbl_status_idle: "空闲"
 lbl_status_running: "运行中"
 btn_start: "▶ 启动挂机"
 btn_stop: "⏹ 停止挂机"
 
-# --- 实例详情页 - 标签页 (Tabs) ---
+# --- 标签页 (Tabs) ---
 tab_tasks: "任务配置"
 tab_logs: "运行日志"
 tab_stats: "统计与状态"
+
+# --- 任务运行列表 (Task List Status) ---
+lbl_running_title: "🔥 运行中"
+lbl_queue_title: "⏳ 队列中"
+lbl_waiting_title: "💤 等待中"
+lbl_enabled_tasks: "✅ 已启用任务"
 
 # --- 统计面板 (Stats Panel) ---
 group_stamina: "领主体力 (双击修改)"
 lbl_idle_queues: "空闲行军队列:"
 
-# --- 英雄管理 (Hero Management) ---
+# --- 右键菜单 (Context Menu) ---
+menu_run_now: "🚀 立即执行"
+menu_edit_info: "✏️ 编辑实例信息"
+menu_open_folder: "📂 打开数据目录"
+menu_delete: "🗑️ 删除实例"
+
+# --- 系统托盘 (System Tray) ---
+msg_app_hidden: "KSAS 已隐藏"
+msg_click_restore: "程序仍在后台运行，点击托盘图标可恢复。"
+msg_show_ui: "显示主界面"
+msg_quit_app: "退出程序"
+
+# ==========================================
+# 3. 弹窗与对话框 (Dialogs)
+# ==========================================
+# --- 登录窗口 (Login) ---
+title_login: "KSAS 登录"
+lbl_enter_key: "请输入卡密"
+chk_remember_key: "记住卡密"
+btn_login: "登录"
+btn_verifying: "验证中..."
+msg_login_failed: "登录失败"
+msg_auto_login_failed: "自动登录失败"
+msg_prev_session_invalid: "上次会话无效:\n{}"
+msg_enter_key: "请输入卡密。"
+msg_session_check_fail: "验证通过但会话检查失败。"
+msg_verify_fail: "验证失败:\n{}"
+msg_conn_error: "连接错误: {}"
+title_auth_failed: "授权验证失败"
+btn_auth_invalid: "授权失效"
+
+# --- 实例管理 (Instance Manager) ---
+title_add_instance: "添加新实例"
+title_edit_instance: "修改实例信息"
+lbl_name: "实例名称:"
+lbl_address: "设备地址:"
+lbl_diana: "戴安娜技能:"
+tip_diana: "(0 表示未拥有)"
+lbl_march_slots: "行军队列:"
+tip_march_slots: "(1-6)"
+ph_instance_name: "例如: 主号, 小号1..."
+ph_serial: "序列号/IP:端口"
+ph_select_device: "请选择设备..."
+ph_no_device: "未检测到在线设备"
+msg_confirm_del: "确认删除"
+msg_del_warn: "确定要删除实例 [{}] 吗？\n\n• 配置文件将被移除\n• 统计数据将被清空\n• 此操作不可恢复！"
+msg_instance_updated: "[System] 实例信息已更新: {} (戴安娜 Lv.{}, 队列: {})"
+
+# --- 其他交互 ---
+msg_input_stamina: "请输入当前体力值:"
+msg_config_saved: "配置已保存: {} = {}"
+msg_adb_error: "ADB 错误"
+msg_get_device_fail: "无法获取设备列表:\n{}"
+
+# ==========================================
+# 4. 全局设置 (Global Settings)
+# ==========================================
+tab_general: "通用"
+tab_adb: "ADB 设置"
+tab_data: "数据管理"
+
+grp_language: "语言/Language"
+grp_behavior: "行为"
+chk_close_tray: "关闭时最小化到托盘"
+chk_auto_connect: "启动时自动连接设备"
+
+grp_adb_path: "ADB 路径"
+chk_internal_adb: "使用内置 ADB (推荐)"
+grp_adb_tools: "ADB 工具"
+btn_restart_adb: "重启 ADB 服务"
+msg_adb_restarted: "ADB 服务已重启"
+
+grp_backup: "备份与还原"
+btn_backup: "📦 备份所有数据"
+btn_restore: "♻️ 从备份还原"
+msg_backup_success: "备份成功:\n{}"
+msg_restore_confirm: "这将覆盖当前所有配置。确定继续吗？"
+msg_restore_success: "数据已还原。请重启程序。"
+
+grp_explorer: "资源管理器"
+btn_open_data: "📂 打开数据目录"
+
+# ==========================================
+# 5. 任务配置与分类 (Tasks & Configs)
+# ==========================================
+# --- 任务分类 ---
+cat_general: "通用设置"
+cat_combat: "战斗任务"
+cat_daily: "日常任务"
+cat_alliance: "联盟任务"
+cat_shop: "商店任务"
+cat_other: "其他任务"
+
+# --- 任务名称映射 ---
+task_wolftask: "打狼"
+task_inteltask: "情报任务"
+task_beasttask: "打野怪任务"
+task_rallytask: "集结任务"
+task_gathertask: "采集任务"
+task_shoptask: "商店购买"
+task_alliancetechtask: "联盟科技捐献"
+task_alliancechesttask: "联盟宝箱领取"
+task_alliancehelptask: "联盟帮助"
+task_mailtask: "邮件收取"
+task_test_sidebar: "侧边栏测试"
+task_example: "示例任务"
+
+# --- 通用任务配置 ---
+cfg_diana_level: "🏹 戴安娜技能等级"
+help_diana_level: "用于计算体力消耗。0表示未拥有。"
+cfg_auto_restart: "🔄 异常自动重启"
+cfg_total_queues: "⚔️ 行军队列总数"
+cfg_interval: "运行间隔 (秒)"
+unit_sec: " 秒"
+unit_min: " 分"
+
+# --- 打狼任务 (Wolf) 配置 ---
+cfg_wolf_interval: "运行间隔 (分钟)"
+cfg_wolf_attacks: "剩余攻击次数"
+cfg_wolf_soldiers: "出征士兵数量"
+cfg_wolf_hero: "英雄策略"
+cfg_wolf_one_soldier: "使用1兵出击"
+cfg_wolf_fallback: "英雄不可用策略"
+opt_hero_any: "不限制"
+opt_hero_diana: "仅戴安娜"
+opt_hero_fahd_diana: "法赫德 + 戴安娜"
+opt_fallback_default: "不使用英雄"
+opt_fallback_wait: "推迟5分钟（重试）"
+
+# --- 情报任务 (Intel) 配置 ---
+lbl_enable_intel: "启用情报任务"
+cfg_intel_desc: "自动扫描并完成地图上的情报任务 (野怪、帐篷、酒馆)。"
+
+# --- 邮件任务 (Mail) 配置 ---
+cfg_mail_system: "📧 系统信息"
+cfg_mail_alliance: "🛡️ 联盟信息"
+cfg_mail_report: "📜 报告"
+cfg_mail_war: "⚔️ 战争信息"
+
+# --- 示例/测试任务说明 ---
+desc_example_task: "这是一个示例任务，没什么好配置的。"
+desc_test_sidebar: "此任务用于测试侧边栏功能。\n它会检测空闲队列并保存到统计数据中。"
+
+# ==========================================
+# 6. 游戏数据 (Game Data)
+# ==========================================
+# --- 英雄管理 ---
 title_hero_management: "英雄状态管理"
+title_hero_list: "英雄列表"
 lbl_hero_name: "英雄"
 lbl_hero_owned: "拥有"
 lbl_hero_queue: "状态"
 val_idle: "空闲"
 val_busy: "忙碌"
-title_hero_list: "英雄列表"
 
-# --- 英雄名称 (Hero Names) ---
+# --- 英雄名称 ---
 hero_rosa: "罗莎"
 hero_alcar: "阿尔卡"
 hero_margot: "玛格特"
@@ -58,84 +229,97 @@ hero_edwin: "埃德温"
 hero_seth: "赛斯"
 hero_forrest: "福斯特"
 
-# --- 任务列表状态 (Task Lists) ---
-lbl_running_title: "🔥 运行中"
-lbl_queue_title: "⏳ 队列中"
-lbl_waiting_title: "💤 等待中"
-
-# --- 右键菜单 (Context Menu) ---
-menu_run_now: "🚀 立即执行"
-menu_edit_info: "✏️ 编辑实例信息"
-menu_open_folder: "📂 打开数据目录"
-menu_delete: "🗑️ 删除实例"
-
-# --- 弹窗与提示 (Dialogs & Messages) ---
-title_add_instance: "添加新实例"
-title_edit_instance: "修改实例信息"
-lbl_name: "实例名称:"
-lbl_address: "设备地址:"
-lbl_diana: "戴安娜技能:"
-tip_diana: "(0 表示未拥有)"
-lbl_march_slots: "行军队列:"
-tip_march_slots: "(1-6)"
-msg_error: "错误"
-msg_success: "成功"
-msg_input_invalid: "输入无效：名称或地址不能为空！"
-msg_confirm_del: "确认删除"
-msg_del_warn: "确定要删除实例 [{}] 吗？\n\n• 配置文件将被移除\n• 统计数据将被清空\n• 此操作不可恢复！"
-msg_input_stamina: "请输入当前体力值:"
-
-# --- 任务配置项 (General Settings / Tasks) ---
-cfg_diana_level: "🏹 戴安娜技能等级"
-help_diana_level: "用于计算体力消耗。0表示未拥有。"
-cfg_auto_restart: "🔄 异常自动重启"
-cfg_total_queues: "⚔️ 行军队列总数"
-cfg_interval: "运行间隔 (秒)"
-
-# --- 全局设置 (Global Settings) ---
-tab_general: "通用"
-tab_adb: "ADB 设置"
-tab_data: "数据管理"
-grp_language: "语言"
-grp_behavior: "行为"
-chk_close_tray: "关闭时最小化到托盘"
-chk_auto_connect: "启动时自动连接设备"
-grp_adb_path: "ADB 路径"
-chk_internal_adb: "使用内置 ADB (推荐)"
-btn_browse: "浏览..."
-grp_adb_tools: "ADB 工具"
-btn_restart_adb: "重启 ADB 服务"
-grp_backup: "备份与还原"
-btn_backup: "📦 备份所有数据"
-btn_restore: "♻️ 从备份还原"
-grp_explorer: "资源管理器"
-btn_open_data: "📂 打开数据目录"
-btn_save: "保存"
-btn_cancel: "取消"
-msg_adb_restarted: "ADB 服务已重启"
-msg_backup_success: "备份成功:\n{}"
-msg_restore_confirm: "这将覆盖当前所有配置。确定继续吗？"
-msg_restore_success: "数据已还原。请重启程序。"
-
-# --- 日志消息 (Logs) ---
+# ==========================================
+# 7. 系统日志 (System Logs)
+# ==========================================
+log_ui_launched: "KSAS UI 已启动"
+log_app_restart: "正在重启应用: {}"
 log_loading_instance: "正在加载实例: {} ({})"
 log_registry_corrupted: "注册表损坏: {}"
 log_save_registry_failed: "保存注册表失败: {}"
-log_load_scheduler_failed: "加载调度器失败 {}: {}"
-log_instance_created: "新实例创建成功: {}"
+log_load_config_failed: "加载全局配置失败: {}"
+log_save_config_failed: "保存全局配置失败: {}"
+log_instance_conf_updated: "实例配置已更新: {}"
 log_create_instance_failed: "创建实例失败: {}"
 log_deleting_instance: "正在删除实例: {}"
-log_stop_scheduler_error: "停止调度器出错: {}"
 log_folder_deleted: "文件夹已物理删除: {}"
 log_delete_failed: "物理删除失败: {}"
 log_cleanup_file: "[{}] 自动清理过期文件: {}"
 log_cleanup_file_failed: "无法删除文件 {}: {}"
 log_cleanup_error: "[{}] 自动清理流程异常: {}"
+log_load_scheduler_failed: "加载调度器失败 {}: {}"
+log_instance_created: "新实例创建成功: {}"
 
+# --- 调度器 (Scheduler) ---
+log_scheduler_started: ">>> 调度器已启动 (Scheduler Started)"
+log_scheduler_stopping: ">>> 调度器正在停止..."
+log_scheduler_stopped: "调度器已停止"
+log_scheduler_thread_started: "调度器线程已启动"
+log_scheduler_sleep: "进入休眠模式: {} 秒 (原因: {})"
+log_scheduler_sleep_until: "进入休眠模式，将在 {} 唤醒 (原因: {})"
 log_next_run_scheduled: "下次运行安排在: {}"
+log_stop_scheduler_error: "停止调度器出错: {}"
+
+# --- 核心安全/ADB/KeyAuth ---
+log_adb_init: "[System] 正在初始化 ADB 设置..."
+log_adb_internal_not_found: "❌ [System] 内置 ADB 文件未找到: {}"
+log_adb_target_locked: "✅ [System] 锁定目标 ADB: {}"
+log_adb_fallback: "⚠️ [System] 未找到指定 ADB，将使用系统默认路径"
+log_device_mounted: "设备对象已挂载: {}"
+log_device_mount_failed: "设备挂载失败: {}"
+log_device_connect_fail_stop: "❌ 无法连接设备，调度器自动停止。"
+log_keyauth_auto_login: "[KeyAuth] 尝试自动登录..."
+log_keyauth_success: "[KeyAuth] 自动登录成功"
+log_keyauth_fail: "[KeyAuth] 自动登录失败: {}"
+log_heartbeat_fail: "安全检测失败，已强制停止所有任务。\n\n原因: {}\n\n请检查网络连接或重启软件。"
+
+# --- 通用动作 (Actions & Errors) ---
 log_task_started: "=== 任务启动: {} ==="
-log_task_crashed: "任务崩溃: {}"
 log_task_finished: "=== 任务结束: {} ==="
+log_task_crashed: "任务崩溃: {}"
+log_task_interrupted: "🛑 任务 {} 被用户强制中断！"
+log_task_rescheduled: "任务 {} 已推迟 {} 秒重新进入排班"
+log_interrupt_signal: "检测到中断信号，强制停止操作！"
+log_manual_stamina: "[User] 手动更新体力: {}"
+log_force_insert: "[User] 已强制插队任务: {}"
+log_stamina_recover: "💧 体力自然回复 +1 (当前: {})"
+log_snapshot_failed: "截图失败或文件不存在"
+log_read_snapshot_failed: "无法读取截图文件"
+log_crop_area_empty: "裁剪区域为空"
+log_image_match_error: "图片匹配异常: {} (Type: {})"
+log_action_target_not_found: "[{}] 未找到目标"
+log_action_exception: "[{}] 异常: {}"
+log_swipe_search: "寻找目标... 滑动 #{}"
+log_pinch_not_supported: "Pinch 动作在独立模式下暂不可用"
+log_core_resource_fail: "⚠️ 核心安全资源加载失败！脚本可能无法判断主城状态。"
+log_home_resource_missing: "核心资源缺失(Home Check)，无法执行回城逻辑！"
+log_force_reset: "尝试暴力复位..."
+log_init_game_state: "正在初始化游戏状态 (回到首页)..."
+log_init_home_fail: "初始化回城失败: {} (将尝试继续运行)"
+log_trying_home: "正在尝试回到首页..."
+log_home_fail: "回城失败: {}"
+status_idle: "无任务，待机中..."
+status_sleep_task: "休眠 (任务 {}s 后)"
+status_sleep_stamina: "休眠 (回体 {}s 后)"
+
+# ==========================================
+# 8. 任务日志 (Task Specific Logs)
+# ==========================================
+
+# --- 侧边栏与队列 (Sidebar) ---
+log_sidebar_expanding: "正在展开侧边栏..."
+log_sidebar_expand_attempt: "展开侧边栏尝试 {}/3"
+log_sidebar_no_buttons: "未找到回城或地图按钮，跳过点击。"
+log_sidebar_idle_count: "检测到空闲队列数: {}"
+log_test_sidebar_start: "=== 开始测试侧边栏功能 ==="
+log_checking_idle_queues: "正在检测空闲行军队列..."
+log_idle_queues_result: "检测结果: 空闲队列数量 = {}"
+log_persistence_success: "数据持久化验证成功: statistics.json 中已保存为 {}"
+log_persistence_failed: "数据持久化验证失败: 内存值 {} != 保存值 {}"
+log_test_sidebar_end: "=== 测试结束 ==="
+
+# --- 战斗通用 (Combat Common) ---
+log_click_search: "点击搜索..."
 log_adjust_level_start: "准备调整等级至: Lv.{}"
 log_level_already_match: "✅ 当前已经是 Lv.{}，跳过调整"
 log_level_img_missing: "⚠️ 缺少等级图片: {}，将跳过侦察步骤"
@@ -144,54 +328,134 @@ log_reset_warning: "归零可能失败(减号未变灰)，尝试强行继续..."
 log_level_upgrading: "正在升级: +{} 次"
 log_level_adjust_failed: "❌ 等级调整似乎失败，当前未检测到 Lv.{}"
 log_level_verify_success: "✅ 二次核实成功: Lv.{}"
-log_click_search: "点击搜索..."
+log_no_hero_specified: "未指定英雄，跳过选将"
+log_clearing_heroes: "检测到已有英雄上阵，执行清除操作"
+log_clear_hero_failed: "清除英雄失败，尝试继续..."
+log_click_first_hero_slot: "点击第一个英雄栏"
+log_searching_hero: "正在寻找英雄: {} ({}/{})"
+log_hero_found: "找到英雄: {}"
+log_hero_not_found_scroll: "未找到 {}，尝试向下拖动 ({}/3)"
+log_click_confirm: "点击确认按钮"
+log_hero_selection_done: "英雄选择完毕，返回出击页面"
+log_hero_selection_failed: "选将失败: {}"
+log_hero_dir_missing: "英雄图片目录不存在: {}"
+log_hero_detected: "检测到英雄: {}"
+log_attack_success: "出击成功 (检测到主界面特征)"
+log_attack_failed: "出击失败 (未检测到主界面特征)"
+log_red_pixels_detected: "检测到红色像素 ({})，体力不足"
+log_trigger_stamina_update: "触发体力更新流程..."
+log_stamina_sufficient: "未检测到红色像素，体力足够"
+log_check_stamina_error: "检查体力时出错: {}"
+log_found_go_map: "发现出城按钮，点击中..."
+log_stamina_ocr_failed: "体力区域未识别到数字，重试 {}/{}"
+log_stamina_parse_failed: "体力数值解析失败: {}"
+log_stamina_updated: "体力更新为: {}"
+log_stamina_update_failed_final: "重试后仍无法更新体力"
 log_diana_cost: "触发戴安娜减耗 (Lv.{}): 本次消耗 {}"
+log_normal_cost: "未检测到戴安娜，使用常规消耗: {}"
 log_set_one_soldier: "正在调整兵力为 1..."
 log_set_avg_soldier: "正在平均分配兵力..."
 err_not_in_combat_page: "未检测到战斗配置页面 (formation1.png)"
-log_normal_cost: "未检测到戴安娜，使用常规消耗: {}"
-# --- 打狼任务 (Wolf Task) ---
-cfg_wolf_interval: "运行间隔 (分钟)"
-cfg_wolf_attacks: "剩余攻击次数"
-cfg_wolf_soldiers: "出征士兵数量"
-cfg_wolf_hero: "英雄策略"
-opt_hero_any: "不限制"
-opt_hero_diana: "仅戴安娜"
-opt_hero_fahd_diana: "法赫德 + 戴安娜"
-log_wolf_not_found: "未发现狼，任务结束"
-log_wolf_attacks_left: "剩余攻击次数: {}"
+
+# --- 打狼任务 (Wolf) ---
+log_wolf_start: "开始执行打狼任务. 1兵: {}, 英雄: {}"
 log_wolf_finished: "攻击次数已耗尽，任务自动关闭"
-log_wolf_start: "开始执行 Wolf 任务. 1兵: {}, 英雄: {}"
-log_wolf_stamina_check: "当前体力(缓存): {}, 需要: {}"
-log_wolf_stamina_low: "体力不足 ({} <= {})"
-log_wolf_find_fail: "寻找 Wolf 流程失败或中断"
-log_wolf_hero_fail_wait: "选将失败: {}, 策略: 等待1小时"
+log_wolf_not_found: "未发现狼，任务结束"
+log_wolf_search_fail: "寻找狼牙棒完全失败"
+log_wolf_combat_page_fail: "未进入战斗配置页面，重试 {}/3 (回到寻找步骤)"
+log_wolf_combat_page_fail_final: "无法进入战斗配置页面，且重试次数耗尽"
+log_wolf_hero_retry: "选将失败，策略为等待。重试计数: {}/16。推迟 5 分钟。"
+log_wolf_hero_force: "选将失败且重试次数已达 16 次，强制使用默认阵容。"
+log_wolf_hero_default: "选将失败，策略为默认。强制继续。"
+log_wolf_hero_fail_wait: "选将失败: {}, 策略: 推迟5分钟（重试）"
 log_wolf_hero_fail_default: "选将失败: {}, 策略: 使用默认英雄"
+log_wolf_stamina_check: "当前体力(缓存): {}, 需要: {}"
+log_wolf_red_stamina: "检测到红字 (体力不足)"
+log_wolf_stamina_low: "体力不足 ({} <= {})"
+log_wolf_stamina_warn: "体力红字警报，推迟 {:.1f} 分钟"
+log_wolf_stamina_gap: "体力不足 (缺 {} 点)，推迟 {} 分钟"
 log_wolf_rally_stamina_low: "体力不足 (检测到红色警示)，取消出击，返回主页并推迟5分钟"
 log_wolf_deduct_stamina: "扣除体力: {}, 剩余: {}"
 log_wolf_deduct_queue: "扣除空闲队列, 剩余: {}"
-log_wolf_diana_found: "检测到 Diana (Lv.{}), 体力消耗: {}"
-log_wolf_diana_not_found: "未检测到 Diana，使用默认消耗: 25"
-cfg_wolf_one_soldier: "使用1兵出击"
-cfg_wolf_fallback: "英雄不可用策略"
-opt_fallback_default: "不使用英雄"
-opt_fallback_wait: "等待1小时"
-# --- 情报任务 (Intel Task) ---
-cfg_intel_desc: "自动扫描并完成地图上的情报任务 (野怪、帐篷、酒馆)。\n优先级: 野怪 > 帐篷 > 酒馆"
+log_wolf_diana_found: "检测到戴安娜 (Lv.{}), 体力消耗: {}"
+log_wolf_diana_not_found: "未检测到戴安娜，使用默认消耗: 25"
+log_wolf_attacks_left: "剩余攻击次数: {}"
+log_wolf_disabled_zero_attacks: "剩余次数为 0，禁用任务"
+log_wolf_find_fail: "寻找狼牙棒流程失败或中断"
+log_wolf_click_attack: "点击出击按钮"
+log_wolf_attack_home_fail: "出击点击后未检测到主页特征，可能失败"
+log_wolf_attack_btn_missing: "未找到出击按钮"
+log_wolf_updating_stamina: "正在更新体力信息..."
+log_wolf_no_queue: "没有空闲队列，推迟 5 分钟"
+log_wolf_backpack_fail: "未找到背包按钮，重试..."
+log_wolf_check_fail: "未找到 check.png (物品栏特征)，重试..."
+log_wolf_icon_fail: "未找到 wolf.png，重试..."
+log_wolf_item_fail: "物品寻找失败 (重试次数耗尽)"
+log_wolf_click_use: "点击蓝色按钮 (使用)"
+log_wolf_click_pos: "点击指定位置 (360, 570)"
+log_wolf_click_search: "点击橙色按钮 (搜索)"
+log_wolf_click_rally: "点击蓝色按钮 (攻击/集结)"
+
+# --- 情报任务 (Intel) ---
 log_intel_start: "开始执行情报任务..."
-log_intel_enter_fail: "无法进入情报界面 (雷达图标)"
-log_intel_no_more_targets: "未发现更多可执行的情报"
+log_intel_executing: "正在执行 {} 位于 {}"
 log_intel_finished: "情报任务结束，共处理 {} 个目标"
-log_intel_stamina_low: "体力不足 ({} < {})，跳过当前目标"
+log_intel_no_more_targets: "未发现更多可执行的情报"
+log_intel_found_tasks: "发现 {} 个任务: {}"
+log_intel_already_wild: "已在野外，点击情报图标"
+log_intel_switch_map: "切换到地图模式"
+log_intel_snapshot_fail: "截图失败"
+log_intel_read_fail: "读取截图失败: {}"
+log_intel_scan_fail: "扫描失败: {}"
+log_intel_enter_fail: "无法进入情报界面 (雷达图标)"
+log_intel_icon_missing: "主页未发现情报图标"
 log_intel_attack_sent: "已派遣队伍前往 {} (消耗: {})"
-# --- 任务分类 (Task Categories) ---
-cat_general: "通用设置"
-cat_combat: "战斗任务"
-cat_daily: "日常任务"
-cat_alliance: "联盟任务"
-cat_shop: "商店任务"
-cat_other: "其他任务"
-task_wolf: "打狼任务"
-task_intel: "情报任务"
-task_test_sidebar: "侧边栏测试"
-task_example: "示例任务"
+log_intel_deduct_stamina: "扣除体力: {}, 剩余: {}"
+log_intel_deduct_queue: "扣除空闲队列: {}, 剩余: {}"
+log_intel_stamina_low: "体力不足 ({} < {})，跳过当前目标"
+# Intel - Tavern
+log_intel_tavern_blue_missing: "酒馆: 未找到蓝色按钮 (任务进行中?), 跳过..."
+log_intel_tavern_stamina_low: "酒馆: 体力不足"
+log_intel_tavern_scan: "正在扫描酒馆验证..."
+log_intel_tavern_timeout: "酒馆扫描超时"
+# Intel - Tent
+log_intel_tent_blue_missing: "帐篷: 未找到蓝色按钮 (任务进行中?), 跳过..."
+log_intel_tent_stamina_low: "帐篷: 体力不足"
+# Intel - Beast
+log_intel_beast_no_queue: "野怪: 无空闲队列"
+log_intel_beast_blue_missing: "野怪: 未找到蓝色按钮 (任务进行中?), 跳过..."
+log_intel_beast_stamina_low: "野怪: 体力不足"
+log_intel_beast_queue_full: "野怪: 出击后队列已满"
+log_intel_beast_home_fail: "野怪: 无法返回主页"
+
+# --- 邮件任务 (Mail) ---
+log_mail_start: "开始收取邮件"
+log_mail_click_icon: "点击邮件图标"
+log_mail_icon_missing: "未找到邮件图标"
+log_mail_process_cat: "正在处理: {}"
+log_mail_skip_cat: "跳过: {} (未启用)"
+log_mail_finish: "邮件收取完成"
+
+# --- 联盟任务 (Alliance) ---
+log_alliance_help_start: "开始执行：{}"
+log_alliance_help_found: "{}"
+log_alliance_help_not_found: "{}"
+log_click_alliance_icon: "点击联盟图标"
+log_alliance_icon_not_found: "未找到联盟图标"
+log_start_tech_donation: ">>> 开始联盟捐献"
+log_click_tech_icon: "点击科技图标"
+log_tech_icon_not_found: "未找到科技图标"
+log_found_recommended_tech: "发现推荐科技 (大拇指)，点击中..."
+log_long_press_donation: "正在长按捐献..."
+log_no_recommended_tech: "未发现推荐科技，跳过捐献。"
+log_start_chest_collection: ">>> 开始领取联盟宝箱"
+log_click_chest_icon: "点击宝箱图标"
+log_chest_icon_not_found: "未找到宝箱图标"
+
+# --- 其他任务 (Other) ---
+log_beast_task_start: ">>> 开始执行打野任务..."
+log_rally_task_start: ">>> 开始执行集结任务..."
+log_gather_task_start: ">>> 开始执行采集任务..."
+log_example_task_start: ">>> 示例任务开始执行！正在模拟点击..."
+log_example_task_clicking: ">>> 点击完成，正在识别..."
+log_example_task_finished: ">>> 任务完成！"

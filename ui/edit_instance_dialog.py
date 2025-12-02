@@ -1,8 +1,8 @@
 # ui/edit_instance_dialog.py
 # -*- coding: utf-8 -*-
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QFormLayout, QLineEdit, 
-    QDialogButtonBox, QSpinBox, QLabel
+    QDialog, QVBoxLayout, QFormLayout, QLineEdit,
+    QDialogButtonBox, QSpinBox, QLabel, QAbstractSpinBox
 )
 from i18n.i18n import get_text
 
@@ -28,12 +28,12 @@ class EditInstanceDialog(QDialog):
         
         # 1. 名字
         self.line_name = QLineEdit(self.old_name)
-        self.line_name.setPlaceholderText("New Name")
+        self.line_name.setPlaceholderText(get_text("ph_instance_name"))
         form.addRow(get_text("lbl_name"), self.line_name)
         
         # 2. 地址
         self.line_serial = QLineEdit(self.old_serial)
-        self.line_serial.setPlaceholderText("e.g. 127.0.0.1:5555")
+        self.line_serial.setPlaceholderText(get_text("ph_serial"))
         form.addRow(get_text("lbl_address"), self.line_serial)
         
         # 3. Diana 等级 (新增)
@@ -41,6 +41,7 @@ class EditInstanceDialog(QDialog):
         self.spin_diana.setRange(0, 5) # 0表示没有，1-5是等级
         self.spin_diana.setValue(int(self.old_diana))
         self.spin_diana.setSuffix(" Lv")
+        self.spin_diana.setButtonSymbols(QAbstractSpinBox.NoButtons)
         # 加个小提示
         lbl_tip = QLabel(get_text("tip_diana"))
         lbl_tip.setStyleSheet("color: gray; font-size: 9pt;")
@@ -52,6 +53,7 @@ class EditInstanceDialog(QDialog):
         self.spin_march = QSpinBox()
         self.spin_march.setRange(1, 6)
         self.spin_march.setValue(int(self.old_march_slots))
+        self.spin_march.setButtonSymbols(QAbstractSpinBox.NoButtons)
         
         lbl_tip_march = QLabel(get_text("tip_march_slots"))
         lbl_tip_march.setStyleSheet("color: gray; font-size: 9pt;")

@@ -1,4 +1,5 @@
 from tasks.base_task import BaseTask
+from i18n.i18n import get_text
 
 class GatherTask(BaseTask):
     config_schema = [
@@ -20,6 +21,6 @@ class GatherTask(BaseTask):
         return 80
 
     def run_impl(self):
-        self.logger.info("Executing Gather Task...")
+        self.logger.info(get_text("log_gather_task_start"))
         # TODO: Implement logic
         return True

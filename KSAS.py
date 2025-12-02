@@ -2,6 +2,7 @@
 import sys
 import os
 import subprocess
+from PySide6.QtWidgets import QApplication, QStyleFactory
 
 # 限制第三方库线程 (优化性能)
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -10,6 +11,25 @@ os.environ["PADDLE_NUM_THREADS"] = "1"
 os.environ["OPENCV_NUM_THREADS"] = "1"
 
 import logging
+import airtest.core.api
+
+# ==============================================================================
+# 🩹 Monkeypatch: 修复打包后 Airtest 找不到 assets 图片的问题
+# ==============================================================================
+_original_template_init = airtest.core.api.Template.__init__
+
+def _patched_template_init(self, filename, *args, **kwargs):
+    if getattr(sys, 'frozen', False) and isinstance(filename, str):
+        # 如果是相对路径，尝试在临时目录找
+        if not os.path.isabs(filename):
+            possible_path = os.path.join(sys._MEIPASS, filename)
+            if os.path.exists(possible_path):
+                filename = possible_path
+    _original_template_init(self, filename, *args, **kwargs)
+
+airtest.core.api.Template.__init__ = _patched_template_init
+# ==============================================================================
+
 from PySide6.QtWidgets import QApplication
 from ui.main_window_logic import MainWindowLogic
 
@@ -21,6 +41,7 @@ from airtest.core.android import constant
 from tools.keyauth.keyauth import api
 from ui.login_dialog import LoginDialog
 from tools.resource_loader import ResourceLoader
+from i18n.i18n import get_text
 
 def getchecksum():
     # 简单的 checksum 占位符，实际应读取文件 MD5
@@ -38,8 +59,8 @@ def setup_global_adb():
     """
     设置 Airtest 全局 ADB 路径 (绝对路径 + 和平共处版)
     """
-    print("-" * 30)
-    print("[System] 正在初始化 ADB 设置...")
+    logger.info("-" * 30)
+    logger.info(get_text("log_adb_init"))
     
     use_internal = global_config.get("use_internal_adb", True)
     custom_path = global_config.get("adb_path", "")
@@ -48,7 +69,10 @@ def setup_global_adb():
     
     # 1. 【核心修改】获取 KSAS.py 文件所在的绝对目录
     # 这确保了无论脚本在哪里运行，都能找到旁边的 tools 文件夹
-    project_root = os.path.dirname(os.path.abspath(__file__))
+    if getattr(sys, 'frozen', False):
+        project_root = sys._MEIPASS
+    else:
+        project_root = os.path.dirname(os.path.abspath(__file__))
     
     if use_internal:
         # 拼接绝对路径
@@ -56,14 +80,13 @@ def setup_global_adb():
         if os.path.exists(internal_path):
             target_adb = internal_path
         else:
-            print(f"❌ [System] 内置 ADB 文件未找到: {internal_path}")
-            print("   (请确保 tools/adb/adb.exe 存在且结构正确)")
+            logger.error(get_text("log_adb_internal_not_found", internal_path))
     elif custom_path and os.path.exists(custom_path):
         target_adb = custom_path
             
     if target_adb:
         adb_dir = os.path.dirname(target_adb)
-        print(f"✅ [System] 锁定目标 ADB: {target_adb}")
+        logger.info(get_text("log_adb_target_locked", target_adb))
         
         # 2. 【核心】修改 Airtest 内部常量
         constant.ADB_PATH = target_adb
@@ -77,14 +100,14 @@ def setup_global_adb():
         try:
             import adbutils
             adbutils._adb_path = target_adb
-            print("[System] 已修正 adbutils 库的路径指向")
+            logger.info("[System] adbutils path corrected")
         except ImportError:
-            pass 
+            pass
             
     else:
-        print("⚠️ [System] 未找到指定 ADB，将使用系统默认路径 (可能会导致兼容性问题)")
+        logger.warning(get_text("log_adb_fallback"))
     
-    print("-" * 30)
+    logger.info("-" * 30)
 
 # 配置日志
 logging.basicConfig(
@@ -100,6 +123,7 @@ if __name__ == "__main__":
 
     # 2. 启动 UI
     app = QApplication(sys.argv)
+    app.setStyle(QStyleFactory.create("Fusion"))
 
     # --- KeyAuth 验证流程 ---
     keyauthapp = init_keyauth()
@@ -110,23 +134,23 @@ if __name__ == "__main__":
 
     # A. 尝试自动登录
     if saved_key:
-        print(f"[KeyAuth] 尝试自动登录...")
+        logger.info(get_text("log_keyauth_auto_login"))
         try:
-            print(f"[Debug] Verifying key: {saved_key}")
+            # logger.debug(f"Verifying key: {saved_key}")
             auth_result = keyauthapp.license(saved_key)
             
             if auth_result is None: # Success
-                print(f"[Debug] License check passed.")
+                # logger.debug("License check passed.")
                 if keyauthapp.check():
-                    print(f"[KeyAuth] 自动登录成功")
+                    logger.info(get_text("log_keyauth_success"))
                     is_logged_in = True
             else:
                 # auth_result is the error message
-                print(f"[KeyAuth] 自动登录失败: {auth_result}")
+                logger.error(get_text("log_keyauth_fail", auth_result))
                 auto_login_error = auth_result
                 
         except Exception as e:
-            print(f"[KeyAuth] 自动登录失败: {e}")
+            logger.error(get_text("log_keyauth_fail", e))
             auto_login_error = str(e)
 
     
@@ -143,7 +167,7 @@ if __name__ == "__main__":
 
 
     if is_logged_in:
-        print("[System] Initializing Secure Resource Loader...")
+        logger.info("[System] Initializing Secure Resource Loader...")
         ResourceLoader().initialize(keyauthapp)
         # (可选) 这里可以预先测试下载，如果核心资源挂了直接不启动
         # test_img = ResourceLoader().get_template("你的_HOME_CHECK_FILE_ID")
@@ -152,16 +176,33 @@ if __name__ == "__main__":
     # 强制使用 Tiffany Blue 风格浅色主题
     # Tiffany Blue: #0ABAB5 (标准), #81D8D0 (经典), #E0F2F1 (极浅背景)
     app.setStyleSheet("""
+        /* ================= 全局基础设置 ================= */
         QWidget {
             background-color: #E0F2F1; /* 极浅的青色背景 */
-            color: #004D40; /* 深青色文字 */
+            color: #004D40;            /* 深青色文字 (强制) */
             font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
         }
         
-        /* 分组框 */
+        /* 强制弹窗和消息框也使用这个背景，防止变成黑色 */
+        QDialog, QMessageBox {
+            background-color: #E0F2F1;
+        }
+
+        /* 鼠标悬停提示 */
+        QToolTip {
+            background-color: #ffffff;
+            color: #004D40;
+            border: 1px solid #009688;
+            padding: 5px;
+            border-radius: 4px;
+            font-family: "Microsoft YaHei";
+            font-size: 10pt;
+        }
+
+        /* ================= 分组框 (GroupBox) ================= */
         QGroupBox {
             background-color: #ffffff;
-            border: 1px solid #80CBC4; /* 浅青色边框 */
+            border: 1px solid #80CBC4;
             border-radius: 8px;
             margin-top: 12px;
             padding-top: 10px;
@@ -170,12 +211,11 @@ if __name__ == "__main__":
             subcontrol-origin: margin;
             subcontrol-position: top left;
             padding: 0 5px;
-            color: #00695C; /* 较深的青色标题 */
+            color: #00695C;
             font-weight: bold;
-            background-color: #E0F2F1; /* 标题背景与主背景一致，制造悬浮感 */
+            background-color: #E0F2F1; /* 标题背景与主背景一致 */
             border-radius: 3px;
         }
-        
         QGroupBox::indicator {
             width: 18px;
             height: 18px;
@@ -190,18 +230,17 @@ if __name__ == "__main__":
             background-color: #009688;
             border: 1px solid #009688;
             border-radius: 3px;
-            /* image: url(assets/images/home/home_check.png); */
         }
 
-        /* 复选框 */
+        /* ================= 复选框 (CheckBox) ================= */
         QCheckBox {
             spacing: 5px;
-            color: #004D40;
+            color: #004D40; /* 强制文字颜色 */
         }
         QCheckBox::indicator {
             width: 18px;
             height: 18px;
-            border: 1px solid #009688; /* 深青色边框，确保可见 */
+            border: 1px solid #009688;
             border-radius: 3px;
             background-color: #ffffff;
         }
@@ -216,20 +255,36 @@ if __name__ == "__main__":
             border: 1px solid #00796B;
         }
 
-        /* 输入控件 */
+        /* ================= 输入控件 (核心修复区) ================= */
         QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-            background-color: #ffffff;
+            background-color: #ffffff;      /* 强制白底 */
+            color: #004D40;                 /* 强制深青色字 */
             border: 1px solid #B2DFDB;
             border-radius: 4px;
             padding: 4px;
-            color: #004D40;
-            selection-background-color: #80CBC4;
+            selection-background-color: #80CBC4; /* 选中时的背景色 */
+            selection-color: #ffffff;            /* 选中时的文字色 */
         }
         QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
-            border: 1px solid #009688; /* 聚焦时颜色加深 */
+            border: 1px solid #009688;
+        }
+        
+        /* 👇【关键修复】占位符文字颜色 (例如 "请输入卡密") */
+        /* 如果不加这行，深色模式下 Qt 会把它设成白色，导致看不见 */
+        QLineEdit::placeholder {
+            color: #9E9E9E; 
         }
 
-        /* 列表与文本域 */
+        /* 👇【关键修复】修复下拉框弹出层的颜色 */
+        QComboBox QAbstractItemView {
+            background-color: #ffffff;
+            color: #004D40;
+            selection-background-color: #B2DFDB;
+            selection-color: #004D40;
+            outline: none;
+        }
+
+        /* ================= 列表与文本域 ================= */
         QListWidget, QTextEdit {
             background-color: #ffffff;
             border: 1px solid #B2DFDB;
@@ -241,7 +296,7 @@ if __name__ == "__main__":
             color: #004D40;
         }
 
-        /* 按钮 */
+        /* ================= 按钮 ================= */
         QPushButton {
             background-color: #ffffff;
             border: 1px solid #009688;
@@ -257,7 +312,7 @@ if __name__ == "__main__":
             background-color: #B2DFDB;
         }
         
-        /* 特殊按钮：开始/停止 (通过 objectName 或 property 区分更好，这里先通用) */
+        /* 特殊按钮状态 */
         QPushButton[state="running"] {
             background-color: #FFEBEE;
             border-color: #EF5350;
@@ -269,13 +324,12 @@ if __name__ == "__main__":
             color: #2E7D32;
         }
 
-        /* 滚动区域 */
+        /* ================= 滚动区域与滚动条 ================= */
         QScrollArea {
             background-color: transparent;
             border: none;
         }
         
-        /* 滚动条 */
         QScrollBar:vertical {
             border: none;
             background: #E0F2F1;
@@ -291,7 +345,7 @@ if __name__ == "__main__":
             height: 0px;
         }
 
-        /* 折叠框按钮 (CollapsibleBox) */
+        /* ================= 折叠框按钮 ================= */
         QToolButton {
             background-color: #B2DFDB;
             color: #00695C;
@@ -312,5 +366,5 @@ if __name__ == "__main__":
     window = MainWindowLogic(keyauth_app=keyauthapp)
     window.show()
     
-    logger.info("KSAS UI Launched.")
+    logger.info(get_text("log_ui_launched"))
     sys.exit(app.exec())

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import time
 import logging
 import random
@@ -17,6 +18,7 @@ from airtest.core.helper import G
 # 👇 【新增】引入这个常量，为了拿我们在 KSAS.py 里设置好的路径
 from airtest.core.android import constant
 from tools.resource_loader import ResourceLoader
+from i18n.i18n import get_text
 
 class TaskInterruptedError(Exception):
     """任务被用户强制中断"""
@@ -46,11 +48,11 @@ class DeviceOperator:
 
         # 👇 【新增 2】 加载核心安全资源 (替换 "123456" 为你在 KeyAuth 后台的真实 File ID)
         # 这张图就是 home_check.png
-        self.IMG_HOME_CHECK = ResourceLoader().get_template("209805", threshold=0.9)
+        self.IMG_HOME_CHECK = ResourceLoader().get_template("268132", threshold=0.9)
 
         # 如果下载失败，给个警告（或者直接抛异常）
         if self.IMG_HOME_CHECK is None:
-            self.logger.error("⚠️ 核心安全资源加载失败！脚本可能无法判断主城状态。")
+            self.logger.error(get_text("log_core_resource_fail"))
 
     # ==========================================
     # 🛡️ 装饰器
@@ -73,11 +75,11 @@ class DeviceOperator:
                     # 中断信号直接往上抛，给 Scheduler 捕获
                     raise
                 except TargetNotFoundError:
-                    self.logger.warning(f"[{action_name}] 未找到目标")
+                    self.logger.warning(get_text("log_action_target_not_found", action_name))
                     self._save_snapshot(f"{action_name}_404")
                     return False
                 except Exception as e:
-                    self.logger.error(f"[{action_name}] 异常: {e}")
+                    self.logger.error(get_text("log_action_exception", action_name, e))
                     self._save_snapshot(f"{action_name}_error")
                     return False
         return wrapper
@@ -88,7 +90,7 @@ class DeviceOperator:
     def check_interrupt(self):
         """检查是否应该立即停止"""
         if self.interrupt_callback and self.interrupt_callback():
-            self.logger.warning(f"检测到中断信号 (Callback returned True)，强制停止操作！")
+            self.logger.warning(get_text("log_interrupt_signal"))
             raise TaskInterruptedError("Task interrupted by user")
 
     def connect(self):
@@ -99,10 +101,10 @@ class DeviceOperator:
                 self.adb = Android(self.serial, adb_path=constant.ADB_PATH)
                 
                 self._is_connected = True
-                self.logger.info(f"设备对象已挂载: {self.serial}")
+                self.logger.info(get_text("log_device_mounted", self.serial))
                 return True
             except Exception as e:
-                self.logger.error(f"设备挂载失败: {e}")
+                self.logger.error(get_text("log_device_mount_failed", e))
                 self._is_connected = False
                 return False
 
@@ -157,7 +159,7 @@ class DeviceOperator:
             return None
         except Exception as e:
             # 这里打印详细一点，方便调试
-            self.logger.error(f"图片匹配异常: {e} (Type: {type(res) if 'res' in locals() else 'Unknown'})")
+            self.logger.error(get_text("log_image_match_error", e, type(res) if 'res' in locals() else 'Unknown'))
             return None
 
     # ==========================================
@@ -231,14 +233,14 @@ class DeviceOperator:
             self.check_interrupt() # 滑动前检查
             if self._exists_internal(target):
                 return True
-            self.logger.info(f"寻找目标... 滑动 #{i+1}")
+            self.logger.info(get_text("log_swipe_search", i+1))
             self.swipe_screen(direction=direction, scale=scale, area=area)
             time.sleep(0.5)
         return False
 
     @_safe_wrap
     def pinch(self, mode="in"):
-        self.logger.warning("Pinch 动作在独立模式下暂不可用")
+        self.logger.warning(get_text("log_pinch_not_supported"))
         pass
 
     @_safe_wrap
@@ -261,6 +263,7 @@ class DeviceOperator:
 
     @_safe_wrap
     def app_restart(self, package_name):
+        self.logger.info(get_text("log_app_restart", package_name))
         self.adb.stop_app(package_name)
         sleep(1)
         self.adb.start_app(package_name)
@@ -327,11 +330,18 @@ class DeviceOperator:
 
         img_home = self.IMG_HOME_CHECK
         if not img_home:
-            self.logger.error("核心资源缺失(Home Check)，无法执行回城逻辑！")
+            self.logger.error(get_text("log_home_resource_missing"))
             return False
         # img_home = Template(r"assets/images/home/home_check.png")
-        img_island = Template(r"assets/images/home/island.png")
-        img_town_btn = Template(r"assets/images/home/btn_town.png")
+        
+        # 兼容打包后的路径
+        if getattr(sys, 'frozen', False):
+            base_path = sys._MEIPASS
+        else:
+            base_path = "."
+            
+        img_island = Template(os.path.join(base_path, r"assets/images/home/island.png"))
+        img_town_btn = Template(os.path.join(base_path, r"assets/images/home/btn_town.png"))
         
         if self.exists(img_home): return True
         if self.exists(img_island):
@@ -341,7 +351,7 @@ class DeviceOperator:
             self.click(img_town_btn)
             if self.exists(img_home): return True
         
-        self.logger.warning("尝试暴力复位...")
+        self.logger.warning(get_text("log_force_reset"))
 
         for _ in range(10):
             self.press_back()

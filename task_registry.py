@@ -9,20 +9,23 @@ from tasks.daily.intel import IntelTask
 from tasks.daily.gather import GatherTask
 from tasks.shop.general_shop import ShopTask
 from tasks.test_sidebar import TestSidebarTask
-from tasks.daily.alliance import AllianceTechTask, AllianceChestTask
+from tasks.daily.alliance import AllianceTechTask, AllianceChestTask, AllianceHelpTask
+from tasks.daily.mail import MailTask
 
 # 2. 把它们放进一个列表
 TASK_CLASSES = [
-    TestSidebarTask, # 测试任务放最前面方便找
+    # TestSidebarTask, # 测试任务放最前面方便找
     # ExampleTask, # 示例任务可以先注释掉
-    BeastTask,
+    # BeastTask,
     WolfTask,
-    RallyTask,
+    # RallyTask,
     IntelTask,
-    GatherTask,
-    ShopTask,
+    # GatherTask,
+    # ShopTask,
     AllianceTechTask,
     AllianceChestTask,
+    AllianceHelpTask,
+    MailTask,
 ]
 
 def get_all_tasks():

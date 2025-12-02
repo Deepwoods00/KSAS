@@ -19,6 +19,7 @@ class BaseTask:
         self.data = data
         self.logger = logging.getLogger(f"{self.data.instance_id}.Task.{self.name}")
         self.sidebar = Sidebar(device, data)
+        self._manually_scheduled = False
 
     # ==========================================
     # ⚙️ 属性配置
@@ -62,6 +63,7 @@ class BaseTask:
         
         self.data.set_stat(f"tasks.{self.name}.next_run", time_str)
         self.logger.info(get_text("log_next_run_scheduled", time_str))
+        self._manually_scheduled = True
 
     # ==========================================
     # 🏃 运行入口
@@ -69,6 +71,7 @@ class BaseTask:
     def execute(self):
         self.logger.info(get_text("log_task_started", self.name))
         self.data.set_runtime("current_task", self.name)
+        self._manually_scheduled = False
         
         try:
             success = self.run_impl()
@@ -77,13 +80,19 @@ class BaseTask:
             success = False
         
         if success:
-            # 如果任务执行成功，但被禁用了（例如 WolfTask 次数耗尽），就不再安排下次运行
-            if self.enabled:
+            # 任务成功：
+            # 如果子任务没有自己安排时间，且任务仍处于启用状态，则使用默认间隔安排下次运行
+            if self.enabled and not self._manually_scheduled:
                 self.set_next_run()
-            else:
+            elif not self.enabled:
                 self.logger.info(f"任务 {self.name} 已禁用，停止调度")
         else:
-            self.set_next_run(seconds=300)
+            # 任务失败：
+            # 如果子任务已经安排了时间（比如体力不足推迟20分钟），则尊重子任务的安排
+            # 只有当子任务啥也没做直接 return False 时，才执行默认的 5分钟 重试
+            if not self._manually_scheduled:
+                self.logger.warning(f"任务 {self.name} 失败且未指定推迟时间，默认 300秒 后重试")
+                self.set_next_run(seconds=300)
             
         self.logger.info(get_text("log_task_finished", self.name))
 

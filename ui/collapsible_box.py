@@ -56,7 +56,7 @@ class CollapsibleBox(QWidget):
         self.toggle_button.setArrowType(Qt.RightArrow)
         self.toggle_button.setCheckable(True)
         self.toggle_button.setChecked(False)
-        self.toggle_button.clicked.connect(self.on_toggle)
+        self.toggle_button.released.connect(self.on_toggle)
         self.header_layout.addWidget(self.toggle_button)
 
         # 2. Checkbox (Optional)
@@ -68,7 +68,7 @@ class CollapsibleBox(QWidget):
 
         # 3. Title Label
         self.title_label = QLabel(title)
-        self.title_label.mousePressEvent = self.on_title_clicked
+        self.title_label.mouseReleaseEvent = self.on_title_clicked
         self.header_layout.addWidget(self.title_label)
         
         self.header_layout.addStretch()
@@ -105,7 +105,8 @@ class CollapsibleBox(QWidget):
 
     def on_title_clicked(self, event):
         if event.button() == Qt.LeftButton:
-            self.toggle_button.click()
+            # Directly call on_toggle instead of animateClick to ensure consistent behavior
+            self.toggle_button.animateClick()
 
     @Slot()
     def on_toggle(self):
@@ -197,11 +198,26 @@ class CollapsibleBox(QWidget):
 
     @Slot()
     def refresh_height(self):
-        # If we are expanded, we need to update our geometry to accommodate child changes
+        # 如果当前是展开状态，我们需要根据子内容的变化重新调整高度
         if self.toggle_button.isChecked():
-            self.content_area.widget().adjustSize()
+            # 1. 获取内部容器
+            inner_widget = self.content_area.widget()
+            
+            if inner_widget:
+                # 2. 核心修复：强制激活布局重新计算
+                if inner_widget.layout():
+                    inner_widget.layout().activate()
+                
+                # 3. 强制调整大小以适应最新内容 (Shrink to fit)
+                inner_widget.adjustSize()
+            
+            # 4. 更新 ScrollArea 的几何信息
             self.content_area.updateGeometry()
+            
+            # 5. 更新自身的几何信息
             self.updateGeometry()
+            
+            # 6. 继续向上传递信号 (如果还有父级折叠框)
             self.size_changed.emit()
 
     # --- Compatibility Methods ---

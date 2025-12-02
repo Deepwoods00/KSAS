@@ -226,7 +226,7 @@ QComboBox::drop-down {
                <string>添加新设备</string>
               </property>
               <property name="text">
-               <string>➕</string>
+               <string>按钮</string>
               </property>
              </widget>
             </item>
@@ -239,7 +239,7 @@ QComboBox::drop-down {
                <string>刷新 ADB 连接</string>
               </property>
               <property name="text">
-               <string>🔄</string>
+               <string>按钮</string>
               </property>
              </widget>
             </item>
@@ -252,7 +252,7 @@ QComboBox::drop-down {
                <string>全局设置</string>
               </property>
               <property name="text">
-               <string>⚙️</string>
+               <string>按钮</string>
               </property>
              </widget>
             </item>
@@ -265,7 +265,7 @@ QComboBox::drop-down {
                <string>最小化到托盘</string>
               </property>
               <property name="text">
-               <string>🔽</string>
+               <string>按钮</string>
               </property>
              </widget>
             </item>
@@ -309,7 +309,7 @@ QComboBox::drop-down {
            <string notr="true">color: #004D40;</string>
           </property>
           <property name="text">
-           <string>请从左侧选择一个实例，或点击 ➕ 添加新设备</string>
+           <string>请从左侧选择一个实例，或点击加号添加新设备</string>
           </property>
           <property name="alignment">
            <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -359,7 +359,7 @@ QComboBox::drop-down {
            <item>
             <widget class="QLabel" name="label_status_icon">
              <property name="text">
-              <string>🟢</string>
+              <string>绿灯</string>
              </property>
             </widget>
            </item>
@@ -395,7 +395,7 @@ QComboBox::drop-down {
               <enum>Qt::FocusPolicy::NoFocus</enum>
              </property>
              <property name="text">
-              <string>▶ 启动挂机</string>
+              <string>启动挂机</string>
              </property>
              <property name="checkable">
               <bool>true</bool>

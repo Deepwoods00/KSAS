@@ -15,7 +15,7 @@ class IntelTask(CombatTask):
         {
             "key": "enable",
             "type": "checkbox",
-            "label": "Enable Intel Task",
+            "label": "lbl_enable_intel",
             "default": False,
             "menu": "Daily"
         },
@@ -39,6 +39,7 @@ class IntelTask(CombatTask):
             "Tavern": Template(r"assets/images/intel/intel_tavern_white.png", threshold=self.ICON_THRESHOLD, rgb=False),
             "Tent": Template(r"assets/images/intel/intel_tent_white.png", threshold=self.ICON_THRESHOLD, rgb=False),
             "Beast": Template(r"assets/images/intel/intel_beast_white.png", threshold=self.ICON_THRESHOLD, rgb=False),
+            "Event": Template(r"assets/images/intel/intel_event.png", threshold=self.ICON_THRESHOLD, rgb=False),
         }
 
         # Task Execution
@@ -95,42 +96,48 @@ class IntelTask(CombatTask):
         if not self._check_stamina_and_queue():
             return False
 
-        # --- 1. Navigate to Intel ---
-        if not self._navigate_to_intel():
-            return False
-
         # --- 2. Batch Scan & Execute Loop ---
         while True:
+            # --- 1. Navigate to Intel ---
+            if not self._navigate_to_intel():
+                return False
+
             # 2.1 Batch Scan
             task_list = self._scan_all_targets()
             
             if not task_list:
-                self.logger.info(get_text("log_intel_finished", "No more tasks found"))
+                self.logger.info(get_text("log_intel_finished", get_text("log_intel_no_more_targets")))
                 break
                 
-            self.logger.info(f"Found {len(task_list)} tasks: {[t[0] for t in task_list]}")
+            self.logger.info(get_text("log_intel_found_tasks", len(task_list), [t[0] for t in task_list]))
             
             # 2.2 Loop Execution
             for task_type, pos in task_list:
-                self.logger.info(f"Executing {task_type} at {pos}")
+                self.logger.info(get_text("log_intel_executing", task_type, pos))
                 
                 # Click the task icon
                 self.device.click(pos)
                 self.device.sleep(1.0)
                 
                 # Dispatch
-                success = False
+                result = False
                 if task_type == "Tavern":
-                    success = self._handle_tavern()
+                    result = self._handle_tavern()
                 elif task_type == "Tent":
-                    success = self._handle_tent()
+                    result = self._handle_tent()
                 elif task_type == "Beast":
-                    success = self._handle_beast()
+                    result = self._handle_beast()
+                elif task_type == "Event":
+                    result = self._handle_event()
                 
-                if not success:
+                if result == "RESCAN":
+                    self.logger.info("Rescanning targets...")
+                    break
+
+                if not result:
                     # If a task failed (e.g. stamina low, error), we might need to stop or return
                     # Based on MD, most failures lead to GoHomeError -> return False
-                    # But some might just be skip? 
+                    # But some might just be skip?
                     # For now, if handle returns False, we assume it handled the exit/logging
                     return False
 
@@ -139,7 +146,7 @@ class IntelTask(CombatTask):
                 self.device.sleep(1.0) # Wait for view to settle
 
         # --- 3. Finish & Return Home ---
-        self.logger.info(get_text("log_intel_finished", "All tasks completed"))
+        self.logger.info(get_text("log_intel_finished", get_text("log_intel_finished_all")))
         self.device.ensure_home()
         return True
 
@@ -171,7 +178,7 @@ class IntelTask(CombatTask):
         # 1. Check if we are already in Wild (Intel icon visible)
         # If we just finished a task, we are likely in Wild.
         if self.device.exists(self.IMG_INTEL_ICON):
-            self.logger.info("Already in Wild, clicking Intel icon")
+            self.logger.info(get_text("log_intel_already_wild"))
             self.device.click(self.IMG_INTEL_ICON)
             self.device.sleep(1.5)
             # Reset View (Critical for coordinate consistency)
@@ -186,7 +193,7 @@ class IntelTask(CombatTask):
         # 3. Check if in Wild (Intel icon is only visible in Wild/Map view)
         if not self.device.exists(self.IMG_BTN_TOWN):
             if self.device.exists(self.IMG_BTN_GO_MAP):
-                self.logger.info(get_text("log_sidebar_switch_map"))
+                self.logger.info(get_text("log_intel_switch_map"))
                 self.device.click(self.IMG_BTN_GO_MAP)
                 self.device.sleep(1.0)
             else:
@@ -223,15 +230,15 @@ class IntelTask(CombatTask):
         try:
             # 1. Snapshot (Using DeviceOperator wrapper)
             # This saves to file and returns path
-            screen_path = self.device.snapshot() 
+            screen_path = self.device.snapshot()
             if not screen_path:
-                self.logger.error("Snapshot failed")
+                self.logger.error(get_text("log_intel_snapshot_fail"))
                 return []
                 
             # 2. Read Image
             screen = cv2.imread(screen_path)
             if screen is None:
-                self.logger.error(f"Failed to read snapshot: {screen_path}")
+                self.logger.error(get_text("log_intel_read_fail", screen_path))
                 return []
                 
             targets = []
@@ -254,7 +261,7 @@ class IntelTask(CombatTask):
             return targets
             
         except Exception as e:
-            self.logger.error(f"Scan failed: {e}")
+            self.logger.error(get_text("log_intel_scan_fail", e))
             return []
 
     def _post_task_sequence(self):
@@ -263,22 +270,25 @@ class IntelTask(CombatTask):
         self._click_reset_pixel()
 
     def _handle_tavern(self):
-        self.logger.info("Handling Tavern Task")
+        self.logger.info(get_text("log_intel_executing", "Tavern", ""))
         # 1. Click Blue (Start)
         if not self.device.exists(self.IMG_BTN_BLUE):
-            self.logger.info("Tavern: Blue button not found (Task in progress?), skipping...")
+            self.logger.info(get_text("log_intel_tavern_blue_missing"))
             return True # Treat as success to continue loop
             
         if not self.device.click(self.IMG_BTN_BLUE): return False
         self.device.sleep(1.0)
         
-        # 2. Check Red (Stamina)
-        # Region: (365, 628, 400, 652)
-        if not self.check_stamina_sufficient((365, 628, 400, 652)):
-            self.logger.info("Tavern: Low Stamina detected")
-            current_stamina = self.data.get_stat("stamina", 0)
-            req_stamina = 10
-            delay_min = max(1, (req_stamina - current_stamina) * 5)
+        # 2. Check Stamina
+        req_stamina = 10
+        stamina_check = self.check_stamina_sufficient(req_stamina)
+        
+        if stamina_check == "RESTART":
+            return "RESCAN"
+            
+        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): # missing
+            self.logger.info(get_text("log_intel_tavern_stamina_low"))
+            delay_min = max(1, stamina_check * 5)
             self.set_next_run(seconds=delay_min * 60)
             self.device.ensure_home()
             return False
@@ -292,7 +302,7 @@ class IntelTask(CombatTask):
         if not self.device.click((470, 1200)): return False
         
         # 5. Scan for Check
-        self.logger.info("Scanning for Tavern Check...")
+        self.logger.info(get_text("log_intel_tavern_scan"))
         start_time = time.time()
         found = False
         while time.time() - start_time < 60:
@@ -307,27 +317,30 @@ class IntelTask(CombatTask):
             self._update_stats(cost=10)
             return True
         else:
-            self.logger.error("Tavern Scan Timeout")
+            self.logger.error(get_text("log_intel_tavern_timeout"))
             self.device.ensure_home()
             return False
 
     def _handle_tent(self):
-        self.logger.info("Handling Tent Task")
+        self.logger.info(get_text("log_intel_executing", "Tent", ""))
         # 1. Click Blue
         if not self.device.exists(self.IMG_BTN_BLUE):
-            self.logger.info("Tent: Blue button not found (Task in progress?), skipping...")
+            self.logger.info(get_text("log_intel_tent_blue_missing"))
             return True # Treat as success to continue loop
 
         if not self.device.click(self.IMG_BTN_BLUE): return False
         self.device.sleep(1.0)
         
-        # 2. Check Red
-        # Region: (365, 628, 400, 652)
-        if not self.check_stamina_sufficient((365, 628, 400, 652)):
-            self.logger.info("Tent: Low Stamina detected")
-            current_stamina = self.data.get_stat("stamina", 0)
-            req_stamina = 12
-            delay_min = max(1, (req_stamina - current_stamina) * 5)
+        # 2. Check Stamina
+        req_stamina = 12
+        stamina_check = self.check_stamina_sufficient(req_stamina)
+        
+        if stamina_check == "RESTART":
+            return "RESCAN"
+            
+        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): # missing
+            self.logger.info(get_text("log_intel_tent_stamina_low"))
+            delay_min = max(1, stamina_check * 5)
             self.set_next_run(seconds=delay_min * 60)
             self.device.ensure_home()
             return False
@@ -341,19 +354,28 @@ class IntelTask(CombatTask):
         return True
 
     def _handle_beast(self):
-        self.logger.info("Handling Beast Task")
+        self.logger.info(get_text("log_intel_executing", "Beast", ""))
         
         # 1. Check Queue
         idle_queues = self.data.get_stat("sidebar.idle_queues", 0)
         if idle_queues == 0:
-            self.logger.info("Beast: No queue")
-            self.set_next_run(seconds=300)
+            # Double check logic
+            self.logger.info("Cached idle queues is 0. Double checking...")
             self.device.ensure_home()
-            return False
+            idle_queues = self.sidebar.get_idle_march_queues()
+            
+            if idle_queues == 0:
+                self.logger.info(get_text("log_intel_beast_no_queue"))
+                self.set_next_run(seconds=300)
+                # self.device.ensure_home() # Already at home
+                return False
+            else:
+                self.logger.info(f"Found {idle_queues} idle queues. Restarting scan.")
+                return "RESCAN"
 
         # 2. Click Blue
         if not self.device.exists(self.IMG_BTN_BLUE):
-            self.logger.info("Beast: Blue button not found (Task in progress?), skipping...")
+            self.logger.info(get_text("log_intel_beast_blue_missing"))
             return True # Treat as success to continue loop
 
         if not self.device.click(self.IMG_BTN_BLUE): return False
@@ -363,14 +385,16 @@ class IntelTask(CombatTask):
         if not self.device.click(self.IMG_BTN_ORANGE): return False
         self.device.sleep(1.0)
         
-        # 4. Check Red (Stamina)
-        # Region: (546, 1213, 607, 1246)
-        if not self.check_stamina_sufficient((546, 1213, 607, 1246)):
-            self.logger.info("Beast: Low Stamina detected")
+        # 4. Check Stamina
+        req_stamina = 10 # As per instruction
+        stamina_check = self.check_stamina_sufficient(req_stamina)
+        
+        if stamina_check == "RESTART":
+            return "RESCAN"
             
-            current_stamina = self.data.get_stat("stamina", 0)
-            req_stamina = 10 # As per instruction
-            delay_min = max(1, (req_stamina - current_stamina) * 5)
+        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): # missing
+            self.logger.info(get_text("log_intel_beast_stamina_low"))
+            delay_min = max(1, stamina_check * 5)
             self.set_next_run(seconds=delay_min * 60)
             self.device.ensure_home()
             return False
@@ -395,14 +419,94 @@ class IntelTask(CombatTask):
             
             # Check Queue After
             if self.data.get_stat("sidebar.idle_queues", 0) == 0:
-                self.logger.info("Beast: Queue full after attack")
+                self.logger.info(get_text("log_intel_beast_queue_full"))
                 self.set_next_run(seconds=300)
                 self.device.ensure_home()
                 return False
                 
             return True
         else:
-            self.logger.error("Beast: Failed to return home")
+            self.logger.error(get_text("log_intel_beast_home_fail"))
+            self.device.ensure_home()
+            return False
+        
+
+    def _handle_event(self):
+        """
+        处理 Event 任务 (逻辑与 Beast 一致)
+        """
+        self.logger.info(get_text("log_intel_executing", "Event", ""))
+        
+        # 1. Check Queue (检查队列)
+        idle_queues = self.data.get_stat("sidebar.idle_queues", 0)
+        if idle_queues == 0:
+            # Double check logic
+            self.logger.info("Cached idle queues is 0. Double checking...")
+            self.device.ensure_home()
+            idle_queues = self.sidebar.get_idle_march_queues()
+            
+            if idle_queues == 0:
+                # 复用 Beast 的日志 key，或者你可以去 zh.yaml 加一个新的
+                self.logger.info(get_text("log_intel_beast_no_queue")) 
+                self.set_next_run(seconds=300)
+                return False
+            else:
+                self.logger.info(f"Found {idle_queues} idle queues. Restarting scan.")
+                return "RESCAN"
+
+        # 2. Click Blue (点击蓝色按钮 - 前往)
+        if not self.device.exists(self.IMG_BTN_BLUE):
+            self.logger.info("Event blue button missing, skipping.")
+            return True # Treat as success to continue loop
+
+        if not self.device.click(self.IMG_BTN_BLUE): return False
+        self.device.sleep(1.0)
+        
+        # 3. Click Orange (点击橙色按钮 - 搜索/攻击)
+        if not self.device.click(self.IMG_BTN_ORANGE): return False
+        self.device.sleep(1.0)
+        
+        # 4. Check Stamina (检查体力, 默认10点)
+        req_stamina = 10 
+        stamina_check = self.check_stamina_sufficient(req_stamina)
+        
+        if stamina_check == "RESTART":
+            return "RESCAN"
+            
+        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): # missing
+            self.logger.info(get_text("log_intel_beast_stamina_low"))
+            delay_min = max(1, stamina_check * 5)
+            self.set_next_run(seconds=delay_min * 60)
+            self.device.ensure_home()
+            return False
+            
+        # 5. Calculate Cost (计算戴安娜减耗)
+        cost = self.calculate_cost(mode="wild")
+        
+        # 6. Click Equal (点击均兵)
+        if not self.device.click(self.IMG_EQUAL): return False
+        self.device.sleep(1.0)
+        
+        # 7. Click Blue2 (March) (点击出击 - 使用固定坐标区域)
+        # Region: (546, 1213)
+        self.device.click((546, 1213))
+        self.device.sleep(2.0)
+        
+        # 8. Check Home (Success) (验证是否返回地图或主页)
+        if self.device.exists(self.IMG_INTEL_ICON) or self.device.exists(self.IMG_BTN_TOWN):
+            # Success
+            self._update_stats(cost=cost, queue=1)
+            
+            # Check Queue After
+            if self.data.get_stat("sidebar.idle_queues", 0) == 0:
+                self.logger.info(get_text("log_intel_beast_queue_full"))
+                self.set_next_run(seconds=300)
+                self.device.ensure_home()
+                return False
+                
+            return True
+        else:
+            self.logger.error("Event attack failed to return to map.")
             self.device.ensure_home()
             return False
 
@@ -411,11 +515,11 @@ class IntelTask(CombatTask):
             current_stamina = self.data.get_stat("stamina", 0)
             new_stamina = max(0, current_stamina - cost)
             self.data.set_stat("stamina", new_stamina)
-            self.logger.info(f"Deducting stamina: {cost}, Remaining: {new_stamina}")
+            self.logger.info(get_text("log_intel_deduct_stamina", cost, new_stamina))
 
         if queue > 0:
             current_idle = self.sidebar.idle_march_count
             new_idle = max(0, current_idle - queue)
             self.data.set_stat("sidebar.idle_queues", new_idle)
             self.sidebar.idle_march_count = new_idle
-            self.logger.info(f"Deducting idle queue: {queue}, Remaining: {new_idle}")
+            self.logger.info(get_text("log_intel_deduct_queue", queue, new_idle))
