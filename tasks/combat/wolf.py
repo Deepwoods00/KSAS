@@ -211,13 +211,16 @@ class WolfTask(CombatTask):
         # 0.3 Check Stamina
         required_stamina = self.get_required_stamina(hero_config)
         current_stamina = self.data.get_stat("stamina", 0)
+        available_stamina = self.get_disposable_stamina(current_stamina)
         
-        self.logger.info(get_text("log_wolf_stamina_check", current_stamina, required_stamina))
+        self.logger.info(get_text("log_wolf_stamina_check", available_stamina, required_stamina))
 
-        if current_stamina < required_stamina:
-            # 计算缺口
-            missing = required_stamina - current_stamina
-            # 1点体力需要5分钟(300秒)
+        # 判定时使用 available_stamina
+        if available_stamina < required_stamina:
+            # 计算缺口 (注意：如果是因为被锁住了，这里会算出需要等待)
+            # 例如: 当前100, 锁了75 -> 可用25. 需求30.
+            # 缺口 = 30 - 25 = 5. 程序会进入等待，这正是我们想要的。
+            missing = required_stamina - available_stamina
             wait_seconds = missing * 300
             
             self.logger.warning(get_text("log_wolf_stamina_gap", missing, missing * 5))

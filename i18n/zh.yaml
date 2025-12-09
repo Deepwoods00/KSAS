@@ -159,7 +159,7 @@ cfg_diana_level: "🏹 戴安娜技能等级"
 help_diana_level: "用于计算体力消耗。0表示未拥有。"
 cfg_auto_restart: "🔄 异常自动重启"
 cfg_total_queues: "⚔️ 行军队列总数"
-cfg_interval: "运行间隔 (秒)"
+cfg_interval: "运行间隔 (分钟)"
 unit_sec: " 秒"
 unit_min: " 分"
 
@@ -318,6 +318,63 @@ log_persistence_success: "数据持久化验证成功: statistics.json 中已保
 log_persistence_failed: "数据持久化验证失败: 内存值 {} != 保存值 {}"
 log_test_sidebar_end: "=== 测试结束 ==="
 
+# --- Map Searcher ---
+log_map_search_start: "开始地图搜索流程: 目标 [{}] 等级 [{}]"
+log_ensure_wild_success: "已确认处于野外地图"
+log_click_find: "点击放大镜图标"
+log_target_icon_found: "找到目标图标: {}"
+log_target_icon_not_found: "未找到图标 [{}], 尝试滑动..."
+log_search_level_match: "当前等级 [{}] 匹配，直接搜索"
+log_search_level_reset: "执行等级校准..."
+log_search_level_adjust: "正在调整等级: +{}"
+log_click_search_btn: "点击搜索按钮"
+log_locating_terror: "正在定位集结目标"
+log_locating_normal: "正在定位目标"
+log_map_search_finish: "地图搜索流程结束"
+err_find_icon_missing: "无法找到放大镜图标"
+err_target_icon_missing: "多次滑动后仍未找到目标图标: {}"
+
+# --- Combat / Beast / Rally ---
+# Config Labels
+cfg_target_level: "目标等级"
+cfg_remaining_attacks: "剩余次数"
+cfg_concurrent_queues: "同时出击数"
+cfg_hero_mode: "英雄模式"
+cfg_soldier_mode: "兵力分配"
+
+# Options
+opt_hero_any: "任意 (不限制)"
+opt_hero_diana: "仅戴安娜 (Diana)"
+opt_hero_fahd_diana: "戴安娜 + 法赫德"
+opt_soldier_full: "满兵出击"
+opt_soldier_equal: "平均分配"
+log_diana_detected_cost: "检测到戴安娜，修正本次体力消耗为: {}"
+err_hero_busy_skip: "指定英雄不可用 ({})，停止当前批次等待回城"
+
+# Logs - General
+log_hero_mode_limit_queue: "英雄模式限制：强制将并发队列设为 1"
+log_stamina_read_fail_skip: "无法读取体力，跳过本次任务"
+log_batch_calc_detail: "批次计算: 设置并发 {}, 空闲 {}, 体力 {}, 剩余 {} -> 最终批次: {}"
+log_processing_batch: "--- 正在处理第 {} / {} 队 ---"
+log_clicking_equal: "点击[平均分配]按钮"
+log_dispatching: "点击出击按钮..."
+log_task_done_disable: "{} 目标次数已达成，自动禁用任务。"
+
+# Logs - Beast
+log_beast_start_round: "开始野怪任务：剩余 {} 次，目标 {} 级"
+
+# Logs - Rally (for next step)
+log_rally_start_round: "开始集结任务：剩余 {} 次，目标 {} 级"
+
+# Errors & Waits
+err_map_search_failed: "地图搜索失败，停止当前批次"
+err_combat_page_failed: "未能进入战斗配置页面"
+err_hero_selection: "选将失败: {}"
+err_attack_verify_fail: "出击验证失败（未返回主地图）"
+log_batch_finished: "本轮循环结束，成功发出 {} 队"
+log_waiting_return: "等待部队回城 ({} 秒)..."
+log_no_idle_queues_wait: "无空闲队列，等待 3 分钟..."
+
 # --- 战斗通用 (Combat Common) ---
 log_click_search: "点击搜索..."
 log_adjust_level_start: "准备调整等级至: Lv.{}"
@@ -452,6 +509,52 @@ log_start_chest_collection: ">>> 开始领取联盟宝箱"
 log_click_chest_icon: "点击宝箱图标"
 log_chest_icon_not_found: "未找到宝箱图标"
 
+# --- 体力管理器 ---
+task_staminacontroltask: "体力监控"
+lbl_enable: "启用"
+
+# 配置项
+cfg_dump_method: "泄洪方式"
+opt_dump_beast: "打野 (Beast)"
+opt_dump_rally: "集结 (Rally)"
+opt_dump_wolf: "打狼 (Wolf)"
+cfg_dump_level: "目标等级"
+cfg_wolf_one_soldier: "启用 1 兵出击"
+cfg_reserve_stamina: "维护阈值 (平时)"
+cfg_hero_mode: "英雄策略"
+opt_hero_any: "任意 (Any)"
+opt_hero_diana: "仅戴安娜"
+opt_hero_fahd_diana: "戴安娜 + 法赫德"
+
+# 日志与状态
+log_stamina_action_update: "执行动作: OCR读取体力"
+log_stamina_ocr_fail: "体力读取失败，推迟5分钟重试"
+log_stamina_mode_maint: "进入模式: 日常维护"
+log_stamina_mode_claim: "进入模式: 领奖/查岗"
+log_stamina_high_dump: "体力过高 ({}/{})，执行泄洪"
+log_stamina_sleep_calc: "体力充足，智能休眠 {} 分钟"
+log_stamina_check_visual: "执行动作: 视觉查岗"
+log_stamina_enter_fail: "进入体力页面失败"
+log_stamina_already_claimed: "检测到已领标记，更新本地记录"
+log_stamina_not_claimed_action: "确认未领，准备执行领奖流程"
+log_stamina_panic: "熔断警告 (剩余 {} 分钟)，强制领奖！"
+log_stamina_safe_claim: "体力安全 ({})，直接领奖"
+log_stamina_need_dump: "体力过高 ({}/{})，先泄洪再领奖"
+log_action_click_avatar: "点击头像区域"
+log_action_click_plus: "点击加号"
+err_plus_not_found: "未找到加号图标"
+log_action_claiming: "执行领取动作 (双击)"
+log_stamina_mark_saved: "标记时段 {} 已完成"
+log_stamina_dump_start: "开始泄洪: 方式={}, 目标<{}"
+log_stamina_target_hit: "体力已达标，停止泄洪"
+log_stamina_no_queues: "无空闲队列，泄洪暂停"
+err_dump_failed: "单次泄洪执行失败"
+err_hero_select: "选将失败: {}"
+log_stamina_step_wait: "单次[{0}]执行完毕，等待部队回城 ({1}分钟)..."
+log_stamina_locked_for_intel: "Intel刷新临近，强制预留75体力 (总:{0} -> 可用:{1})"
+
+
+
 # --- 其他任务 (Other) ---
 log_beast_task_start: ">>> 开始执行打野任务..."
 log_rally_task_start: ">>> 开始执行集结任务..."
@@ -459,3 +562,86 @@ log_gather_task_start: ">>> 开始执行采集任务..."
 log_example_task_start: ">>> 示例任务开始执行！正在模拟点击..."
 log_example_task_clicking: ">>> 点击完成，正在识别..."
 log_example_task_finished: ">>> 任务完成！"
+
+# --- WarehouseTask ---
+task_warehousetask: "仓库领奖"
+log_warehouse_start: "开始执行仓库领奖任务..."
+log_warehouse_nav_fail: "无法进入侧边栏事务页面，任务中止"
+log_warehouse_gift_found: "发现仓库礼物图标"
+log_warehouse_claim_success: "礼物领取动作完成"
+log_warehouse_gift_not_found: "未发现可领取的礼物"
+
+
+# --- RecruitAdvTask ---
+task_recruitadvtask: "高级招募"
+log_recruit_start: "开始执行高级招募任务..."
+log_recruit_daily_limit: "今日招募次数已满 ({0}/5)，任务结束。"
+log_recruit_found_free: "发现免费招募机会 (GO图标)。"
+log_recruit_success: "招募动作完成，今日进度: {0}/5"
+
+# --- RecruitEpicTask ---
+task_recruitepictask: "史诗招募"
+log_recruit_epic_start: "开始执行史诗招募任务..."
+log_recruit_epic_success: "史诗招募完成，进入48小时冷却。"
+log_recruit_epic_cooldown: "未发现免费机会，20分钟后重试。"
+
+
+# --- TroopManager ---
+log_troop_enter_start: "兵营管理器: 正在尝试进入兵营..."
+err_troop_sidebar_fail: "无法切换到侧边栏事务页面。"
+err_troop_icon_missing: "未找到侧边栏步兵图标。"
+log_troop_click_inf: "正在点击步兵图标..."
+err_troop_bubble_missing: "未找到建筑菜单'训练'气泡。"
+log_troop_click_train: "正在点击训练气泡..."
+log_troop_enter_success: "成功进入兵营界面。"
+err_troop_enter_valid_fail: "进入验证失败（未检测到加号/停止图标）。"
+log_troop_switch_tab: "正在切换到页签: {0}"
+log_troop_no_tab_default: "未检测到页签，默认为步兵界面（小号模式）。"
+warn_troop_tab_locked: "无法切换到 {0}: 页签不可见（可能未解锁）。"
+err_troop_asset_missing: "缺少页签资源: {0}"
+log_troop_switch_success: "成功切换到 {0}。"
+warn_troop_switch_fail: "切换到 {0} 失败（图标未激活）。"
+warn_troop_tab_not_found: "未找到 {0} 的页签图标。"
+log_troop_scroll_low: "目标属于低等级(1-5)，执行列表归位操作..."
+log_troop_scroll_high: "目标属于高等级(6-10)，执行列表查看末尾操作..."
+log_troop_train_success: "训练指令下达成功（检测到忙碌状态）。"
+err_troop_train_verify_fail: "训练失败：未检测到训练倒计时（可能资源不足）。"
+log_troop_no_promotable: "未发现晋升箭头（该等级无待晋升士兵）。"
+log_troop_promote_success: "晋升指令下达成功。"
+err_troop_promote_verify_fail: "晋升失败：未检测到训练倒计时（可能资源不足）。"
+lbl_enable_troop: "启用此兵种"
+log_troop_next_run: "训练任务完成。下次检查间隔: {0}小时 {1}分钟"
+
+task_trooptrainingtask: "部队训练"
+lbl_infantry_settings: "🛡️ 步兵设置"
+lbl_lancer_settings: "🐎 骑兵设置"
+lbl_marksman_settings: "🏹 弓兵设置"
+lbl_time_settings: "⏱️ 训练周期设置"
+cfg_max_unlock_level: "当前最高解锁等级"
+cfg_operate_level: "操作等级"
+cfg_train_time_h: "训练时长 (小时)"
+cfg_train_time_m: "训练时长 (分钟)"
+cfg_target_level_label: "目标等级"
+cfg_promote_from_label: "晋升来源"
+cfg_train_mode: "训练模式"
+opt_mode_train_new: "训练新兵"
+opt_mode_promote: "晋升现有士兵"
+
+# --- Missing Keys (Code References) ---
+lbl_enable_feature: "启用该功能"
+lbl_enable_sub: "将这个任务加入调度器"
+grp_settings: "配置"
+grp_options: "选项"
+log_intel_finished_all: "所有目标处理完毕"
+log_wolf_restart_for_stamina: "重启任务以刷新体力..."
+log_task_finished_zero_rem: "任务结束：剩余次数为 0"
+log_stamina_wait: "体力不足 ({}/{})，等待 {} 分钟..."
+log_batch_start: "开始执行批次，共 {} 队"
+log_stamina_insufficient_final: "体力不足: {} < {} (缺: {})"
+log_stamina_sufficient_cached: "缓存体力充足: {} >= {}"
+log_stamina_low_cached: "缓存体力不足: {} < {}，正在检查..."
+log_stamina_sufficient_updated: "更新后体力充足: {} >= {}"
+log_task_init_failed: "初始化任务 {} 失败: {}"
+
+# --- VIP每日奖励---
+task_vipchesttask: "VIP每日奖励"

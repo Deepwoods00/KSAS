@@ -3,6 +3,8 @@ from airtest.core.api import Template
 from i18n.i18n import get_text
 from basic import TaskInterruptedError
 import cv2
+from datetime import datetime, timezone, timedelta
+import math
 
 class CombatTask(BaseTask):
     """
@@ -39,6 +41,44 @@ class CombatTask(BaseTask):
         for i in range(10):
             self.number_templates[i] = Template(f"assets/images/number/{i}.png", threshold=0.9)
 
+    def get_disposable_stamina(self, current_stamina):
+        """
+        计算可用于普通战斗的'闲钱'体力。
+        逻辑：在 Intel 任务刷新前 30 分钟内，强制锁住 75 点体力。
+        """
+        now = datetime.now(timezone.utc)
+        
+        # 1. 定义锁定窗口 (UTC)
+        # Intel 刷新时间: 00:00, 08:00, 16:00
+        # 锁定时间段: 23:30-00:00, 07:30-08:00, 15:30-16:00
+        
+        current_hour = now.hour
+        current_minute = now.minute
+        
+        is_locked = False
+        
+        # 检查是否处于刷新前30分钟
+        if (current_hour == 7 and current_minute >= 30) or \
+           (current_hour == 15 and current_minute >= 30) or \
+           (current_hour == 23 and current_minute >= 30):
+            is_locked = True
+            
+        if is_locked:
+            # 处于锁定窗口，必须保留 75 点
+            reserved = 75
+            disposable = max(0, current_stamina - reserved)
+            
+            if disposable < current_stamina:
+                # 只有当体力确实被扣减了才打印日志，防止刷屏
+                self.logger.info(get_text("log_stamina_locked_for_intel", reserved, disposable))
+            
+            return disposable
+        
+        # 平时：所有体力都可用
+        return current_stamina
+
+    
+
     def verify_combat_page(self):
         """
         确保在战斗配置页面
@@ -69,73 +109,124 @@ class CombatTask(BaseTask):
         # 确保路径正确
         img_diana = Template(r"assets/images/heroes/diana_big.png", threshold=0.9)
         return self.device.exists(img_diana)
+    
+    def get_realtime_cost(self, mode="wild"):
+        """
+        [新增] 实时计算当前屏幕上的体力消耗
+        :param mode: "wild" (野怪) 或 "rally" (集结)
+        :return: int (消耗值)
+        """
+        diana_skill_lv = self.data.get_cfg("modules.general.diana_level", 0)
+        
+        # 默认消耗
+        base_cost = 25 if mode == "rally" else 10
+        
+        # 如果戴安娜技能为0，无论她在不在场，消耗都不变
+        if diana_skill_lv == 0:
+            return base_cost
+
+        # 检测屏幕上是否有戴安娜
+        if self.find_diana():
+            # 查表获取减免后的消耗
+            costs = self.DIANA_COST_TABLE.get(diana_skill_lv, (25, 10))
+            real_cost = costs[0] if mode == "rally" else costs[1]
+            self.logger.info(get_text("log_diana_detected_cost", real_cost))
+            return real_cost
+        
+        return base_cost
 
     def select_heroes(self, heroes: list):
         """
-        根据传入的英雄列表进行选将
-        :param heroes: list, 英雄名称列表 (e.g. ['diana', 'jessie'])
+        [修复版] 英雄选择逻辑
+        修复问题：找到头像后未点击确认按钮
+        逻辑：
+        1. 尝试清空并打开列表。
+        2. 遍历英雄列表。
+        3. 尝试在当前屏、回顶后、或滑动中寻找。
+        4. 【关键】只要找到了，先点头像，立刻点确认按钮。
+        5. 没找到则跳过。
+        6. 最后智能退出。
         """
         if not heroes:
             self.logger.info(get_text("log_no_hero_specified"))
             return
 
-        # 0. 检测是否存在 add.png
+        # ==========================================
+        # 0. 初始化：清空并打开列表
+        # ==========================================
         if not self.device.exists(self.IMG_ADD):
             self.logger.info(get_text("log_clearing_heroes"))
-            # 1. 点击清除按钮 (237, 260)
-            self.device.click((237, 260))
-            self.device.sleep(2.5)
-            
-            # 1.1 再次确认 add.png
-            # 注意：exists 方法内部会调用 _find_template_pos，它会重新截图
-            if not self.device.exists(self.IMG_ADD):
-                self.logger.warning(get_text("log_clear_hero_failed"))
+            self.device.click((237, 260)) # 点击清除
+            self.device.sleep(2.0)
         
-        # 2. 点击第一个英雄栏 (174, 374)
         self.logger.info(get_text("log_click_first_hero_slot"))
-        self.device.click((174, 374))
-        self.device.sleep(1) # 等待英雄选择界面加载
+        self.device.click((174, 374)) # 打开列表
+        self.device.sleep(1.5)
 
-        # 3. 循环选择英雄
+        # ==========================================
+        # 1. 遍历目标列表
+        # ==========================================
+        found_count = 0
+        
         for i, hero_name in enumerate(heroes):
-            self.logger.info(get_text("log_searching_hero", hero_name, i+1, len(heroes)))
+            self.logger.info(f"Targeting hero: {hero_name} ({i+1}/{len(heroes)})")
             
-            # 构建小头像 Template
             img_hero_small = Template(f"assets/images/heroes/{hero_name}_small.png", threshold=0.85)
+            is_found_and_clicked = False # 标记本轮是否成功点到了头像
             
-            found = False
-            # 尝试寻找 (最多拖动3次)
-            for attempt in range(4): # 0 (初始) + 3 (拖动)
+            # --- 步骤 A: 当前屏幕直接寻找 ---
+            if self.device.exists(img_hero_small):
+                self.logger.info(get_text("log_hero_found", hero_name))
+                self.device.click(img_hero_small)
+                self.device.sleep(0.5)
+                is_found_and_clicked = True
+            
+            # --- 步骤 B: 回顶重置 (如果步骤A没找到，且是第2个英雄) ---
+            elif i > 0:
+                self.logger.info("Reseting list to top...")
+                for _ in range(3):
+                    self.device.swipe((351, 600), (351, 1213), duration=0.5)
+                    self.device.sleep(0.2)
+                self.device.sleep(1.0)
+                
                 if self.device.exists(img_hero_small):
                     self.logger.info(get_text("log_hero_found", hero_name))
                     self.device.click(img_hero_small)
                     self.device.sleep(0.5)
-                    found = True
-                    break
-                
-                if attempt < 3:
-                    self.logger.info(get_text("log_hero_not_found_scroll", hero_name, attempt+1))
-                    # 起始点 (358, 905) -> 终止点 (358, 608)
-                    self.device.swipe((358, 905), (358, 608), duration=1.5)
-                    self.device.sleep(1) # 等待滚动停止
-            
-            if not found:
-                raise Exception(f"无法找到目标英雄: {hero_name}")
+                    is_found_and_clicked = True
 
-            # 找到并点击后，点击确认按钮 (440, 1000)
-            self.logger.info(get_text("log_click_confirm"))
-            self.device.click((440, 1000))
-            self.device.sleep(0.5) # 等待跳转到下一个位置或返回
-            
-            # 注意：根据描述，按下确认后会自动跳转到下一个英雄选择页面
-            # 所以不需要手动点击下一个栏位，除非是最后一个英雄选完后需要返回
+            # --- 步骤 C: 下滑寻找 (如果前两步都没找到) ---
+            if not is_found_and_clicked:
+                # self.logger.info(f"Scrolling to find {hero_name}...")
+                for attempt in range(3):
+                    self.device.drag_and_hold((349, 854), (357, 564), duration=1.0, hold=1.0)
+                    
+                    if self.device.exists(img_hero_small):
+                        self.logger.info(get_text("log_hero_found", hero_name))
+                        self.device.click(img_hero_small)
+                        self.device.sleep(0.5)
+                        is_found_and_clicked = True
+                        break
 
-        # 4. 英雄选择完毕后按一次 back 按键返回出击页面
-        # 如果选完最后一个英雄，界面可能还在英雄选择页(如果还有空位)，或者自动返回了？
-        # 根据描述 "英雄选择完毕后按一次back按键返回出击页面"，假设需要手动返回
-        self.logger.info(get_text("log_hero_selection_done"))
-        self.device.keyevent("BACK")
-        self.device.sleep(0.5)
+            # --- [核心修复] 步骤 D: 确认选择 ---
+            if is_found_and_clicked:
+                self.logger.info("Clicking Confirm/Assign button...")
+                self.device.click((440, 1000)) # 点击确认
+                self.device.sleep(1.0)         # 等待窗口反应
+                found_count += 1
+            else:
+                self.logger.warning(f"Hero {hero_name} unavailable. Skipping.")
+
+        # ==========================================
+        # 2. 结束：智能退出
+        # ==========================================
+        self.logger.info(f"Hero selection complete. Picked {found_count}/{len(heroes)}.")
+        
+        # 检查是否还在列表里 (如果没有均兵按钮，说明还在列表，需要补 BACK)
+        if not self.device.exists(self.IMG_EQUAL):
+            self.logger.info("Still in list view, pressing BACK.")
+            self.device.keyevent("BACK")
+            self.device.sleep(0.5)
 
     def set_one_soldier(self, enable=True):
         """
@@ -346,3 +437,4 @@ class CombatTask(BaseTask):
         self.logger.error(get_text("log_stamina_update_failed_final"))
         self.device.ensure_home()
         return False
+    

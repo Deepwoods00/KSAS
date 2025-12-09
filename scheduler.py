@@ -114,8 +114,17 @@ class InstanceScheduler(QThread):
             self.logger.info(get_text("log_scheduler_stopping"))
             self.wait()
             
-            self.instance_root_logger.removeHandler(self.gui_handler)
+            # self.instance_root_logger.removeHandler(self.gui_handler)
             self.logger.info(get_text("log_scheduler_stopped"))
+
+    def dispose(self):
+        """
+        销毁调度器时的清理工作
+        """
+        try:
+            self.instance_root_logger.removeHandler(self.gui_handler)
+        except Exception:
+            pass
 
     # ==========================================
     # 🔄 核心循环 (大脑)

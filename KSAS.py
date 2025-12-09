@@ -3,6 +3,8 @@ import sys
 import os
 import subprocess
 from PySide6.QtWidgets import QApplication, QStyleFactory
+from PySide6.QtWidgets import QListView
+from PySide6.QtGui import QPalette, QColor
 
 # 限制第三方库线程 (优化性能)
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -22,7 +24,12 @@ def _patched_template_init(self, filename, *args, **kwargs):
     if getattr(sys, 'frozen', False) and isinstance(filename, str):
         # 如果是相对路径，尝试在临时目录找
         if not os.path.isabs(filename):
-            possible_path = os.path.join(sys._MEIPASS, filename)
+            if hasattr(sys, '_MEIPASS'):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+            
+            possible_path = os.path.join(base_path, filename)
             if os.path.exists(possible_path):
                 filename = possible_path
     _original_template_init(self, filename, *args, **kwargs)
@@ -70,7 +77,10 @@ def setup_global_adb():
     # 1. 【核心修改】获取 KSAS.py 文件所在的绝对目录
     # 这确保了无论脚本在哪里运行，都能找到旁边的 tools 文件夹
     if getattr(sys, 'frozen', False):
-        project_root = sys._MEIPASS
+        if hasattr(sys, '_MEIPASS'):
+            project_root = sys._MEIPASS
+        else:
+            project_root = os.path.dirname(os.path.abspath(sys.argv[0]))
     else:
         project_root = os.path.dirname(os.path.abspath(__file__))
     
@@ -124,6 +134,13 @@ if __name__ == "__main__":
     # 2. 启动 UI
     app = QApplication(sys.argv)
     app.setStyle(QStyleFactory.create("Fusion"))
+    force_light_palette = QPalette()
+    force_light_palette.setColor(QPalette.ColorRole.Window, QColor(255, 255, 255))
+    force_light_palette.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
+    force_light_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(240, 240, 240))
+    force_light_palette.setColor(QPalette.ColorRole.WindowText, QColor(0, 77, 64)) # 你的主题深青色
+    force_light_palette.setColor(QPalette.ColorRole.Text, QColor(0, 77, 64))
+    app.setPalette(force_light_palette)
 
     # --- KeyAuth 验证流程 ---
     keyauthapp = init_keyauth()
@@ -276,12 +293,35 @@ if __name__ == "__main__":
         }
 
         /* 👇【关键修复】修复下拉框弹出层的颜色 */
-        QComboBox QAbstractItemView {
+        QComboBox QListView {
             background-color: #ffffff;
             color: #004D40;
+            
+            /* 边框设置：青色细边框 */
+            border: 1px solid #80CBC4;
+            
+            /* 选中项的颜色 */
             selection-background-color: #B2DFDB;
             selection-color: #004D40;
-            outline: none;
+            
+            /* 去掉虚线框 */
+            outline: 0px;
+            
+            /* 【关键】去掉内边距，防止出现黑边 */
+            padding: 0px;
+            margin: 0px;
+        }
+
+        /* 列表项样式 */
+        QComboBox QListView::item {
+            min-height: 28px;            /* 给每一项一点高度，方便点击 */
+            padding-left: 8px;           /* 文字左侧留一点距离 */
+        }
+
+        /* 列表项悬停/选中样式 */
+        QComboBox QListView::item:hover, QComboBox QListView::item:selected {
+            background-color: #B2DFDB;   /* 悬停时的浅青色背景 */
+            color: #004D40;
         }
 
         /* ================= 列表与文本域 ================= */

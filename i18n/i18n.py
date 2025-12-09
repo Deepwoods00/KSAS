@@ -26,8 +26,11 @@ def load_language(lang_code):
 
     # 获取当前文件所在目录
     if getattr(sys, 'frozen', False):
-        # 打包后，资源文件位于 sys._MEIPASS/i18n
-        base_dir = os.path.join(sys._MEIPASS, 'i18n')
+        # 打包后，资源文件位于 sys._MEIPASS/i18n 或 exe 同级目录
+        if hasattr(sys, '_MEIPASS'):
+            base_dir = os.path.join(sys._MEIPASS, 'i18n')
+        else:
+            base_dir = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'i18n')
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         

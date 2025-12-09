@@ -140,6 +140,11 @@ class InstanceManager(QObject):
                 sched = self.schedulers[instance_id]
                 if sched.isRunning():
                     sched.stop_scheduler()
+                
+                # 确保移除日志 Handler，防止内存泄漏或重复日志
+                if hasattr(sched, 'dispose'):
+                    sched.dispose()
+                    
                 time.sleep(0.1)
             except Exception as e:
                 self.logger.error(get_text("log_stop_scheduler_error", e))

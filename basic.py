@@ -166,6 +166,55 @@ class DeviceOperator:
     # 👆 动作执行
     # ==========================================
     @_safe_wrap
+    def drag_and_hold(self, start, end, duration=1.8, hold=1.0, steps=20):
+        """
+        精准拖拽并保持。
+        
+        策略 A (Minitouch): 按下 -> 插值移动 -> 悬停不动 -> 松开 (完美防抖)
+        策略 B (Maxtouch): 合并时间执行极慢速滑动 (依靠低速消除惯性)
+        """
+        x1, y1 = start
+        x2, y2 = end
+        
+        try:
+            # 1. 尝试获取底层代理
+            proxy = self.adb.touch_proxy
+            
+            # [新增] 预先检查是否支持 touch_down，不支持直接抛出异常跳到 except
+            if not hasattr(proxy, "touch_down"):
+                raise NotImplementedError("touch_down not supported")
+            
+            # 2. 尝试执行精准操作
+            proxy.touch_down((x1, y1))
+            
+            step_sleep = duration / steps
+            for i in range(steps):
+                progress = (i + 1) / steps
+                mx = x1 + (x2 - x1) * progress
+                my = y1 + (y2 - y1) * progress
+                proxy.touch_move((mx, my))
+                time.sleep(step_sleep)
+            
+            if hold > 0:
+                time.sleep(hold)
+            
+            proxy.touch_up((x2, y2))
+            time.sleep(0.5)
+            
+        except Exception:
+            # 3. [降级方案] 适用于 MAXTOUCH / Android 10+
+            # 报错说明设备不支持原子操作。
+            # 解决方案：将 "移动时间" 和 "悬停时间" 相加，执行一次【极慢速】滑动。
+            # 原理：滑动时间越长，末端速度越慢，惯性回弹越小。
+            total_duration = duration + hold
+            # 记录一下如果是调试模式
+            # self.logger.debug(f"Device fallback: performing slow swipe for {total_duration}s")
+            
+            self.adb.swipe(start, end, duration=total_duration)
+            time.sleep(0.5)
+
+
+    @_safe_wrap
     def click(self, target, times=1, offset=(0, 0)):
         pos = target
         if isinstance(target, Template):
@@ -336,7 +385,10 @@ class DeviceOperator:
         
         # 兼容打包后的路径
         if getattr(sys, 'frozen', False):
-            base_path = sys._MEIPASS
+            if hasattr(sys, '_MEIPASS'):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
         else:
             base_path = "."
             
@@ -357,3 +409,5 @@ class DeviceOperator:
             self.press_back()
             if self.exists(img_home): return True
         return False
+    
+    

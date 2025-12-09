@@ -7,6 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from airtest.core.api import Template
 from tasks.combat.combat_task import CombatTask
+from tasks.daily.stamina_control import StaminaControlTask
 from i18n.i18n import get_text
 
 class IntelTask(CombatTask):
@@ -67,7 +68,7 @@ class IntelTask(CombatTask):
 
     @property
     def priority(self):
-        return 60
+        return 25
 
     @property
     def default_interval(self):
@@ -286,8 +287,15 @@ class IntelTask(CombatTask):
         if stamina_check == "RESTART":
             return "RESCAN"
             
-        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): # missing
+        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): 
             self.logger.info(get_text("log_intel_tavern_stamina_low"))
+            
+            # [新增] 尝试自救
+            if self._try_rescue_stamina():
+                self.logger.info("Stamina rescued. Restarting scan.")
+                return "RESCAN" # 返回 RESCAN，让主循环重新进入地图
+            
+            # [旧逻辑] 自救失败，计算等待时间
             delay_min = max(1, stamina_check * 5)
             self.set_next_run(seconds=delay_min * 60)
             self.device.ensure_home()
@@ -338,8 +346,14 @@ class IntelTask(CombatTask):
         if stamina_check == "RESTART":
             return "RESCAN"
             
-        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): # missing
+        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): 
             self.logger.info(get_text("log_intel_tent_stamina_low"))
+            
+            # [新增] 尝试自救
+            if self._try_rescue_stamina():
+                return "RESCAN"
+            
+            # [旧逻辑]
             delay_min = max(1, stamina_check * 5)
             self.set_next_run(seconds=delay_min * 60)
             self.device.ensure_home()
@@ -392,8 +406,14 @@ class IntelTask(CombatTask):
         if stamina_check == "RESTART":
             return "RESCAN"
             
-        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): # missing
+        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool):
             self.logger.info(get_text("log_intel_beast_stamina_low"))
+            
+            # [新增] 尝试自救
+            if self._try_rescue_stamina():
+                return "RESCAN"
+            
+            # [旧逻辑]
             delay_min = max(1, stamina_check * 5)
             self.set_next_run(seconds=delay_min * 60)
             self.device.ensure_home()
@@ -473,8 +493,15 @@ class IntelTask(CombatTask):
         if stamina_check == "RESTART":
             return "RESCAN"
             
-        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool): # missing
-            self.logger.info(get_text("log_intel_beast_stamina_low"))
+        if isinstance(stamina_check, int) and not isinstance(stamina_check, bool):
+            # 这里之前的日志 key 可能也是 log_intel_beast_stamina_low，保持一致即可
+            self.logger.info(get_text("log_intel_beast_stamina_low")) 
+            
+            # [新增] 尝试自救
+            if self._try_rescue_stamina():
+                return "RESCAN"
+            
+            # [旧逻辑]
             delay_min = max(1, stamina_check * 5)
             self.set_next_run(seconds=delay_min * 60)
             self.device.ensure_home()
@@ -523,3 +550,49 @@ class IntelTask(CombatTask):
             self.data.set_stat("sidebar.idle_queues", new_idle)
             self.sidebar.idle_march_count = new_idle
             self.logger.info(get_text("log_intel_deduct_queue", queue, new_idle))
+
+    def _try_rescue_stamina(self):
+        """
+        借用 StaminaControlTask 的逻辑来尝试领取免费体力。
+        """
+        self.logger.info("Attempting to rescue stamina using StaminaControlTask logic...")
+        
+        # 1. 实例化体力任务对象 (借用它的资源和方法)
+        # 注意：这里只是创建对象，不会执行它的 run_impl
+        helper = StaminaControlTask(self.device, self.data)
+        
+        # 2. 获取时间窗口信息 (直接复用 helper 的逻辑)
+        current_tag, _, is_window_active = helper._get_current_period_info()
+        
+        if not is_window_active:
+            self.logger.info("Not in free stamina claim window.")
+            return False
+
+        # 3. 检查本地记录 (双重检查)
+        last_claimed = self.data.get_stat("tasks.StaminaControlTask.last_claimed_tag", "")
+        if last_claimed == current_tag:
+            self.logger.info(get_text("log_stamina_already_claimed"))
+            return False
+
+        # 4. 进入体力界面 (复用 helper 的导航逻辑)
+        if not helper._enter_stamina_view():
+            self.logger.warning("Failed to enter stamina view.")
+            return False
+
+        # 5. 视觉检查 (复用 helper 的 check.png 识别)
+        if helper._check_is_claimed():
+            self.logger.info("Visual check: Already claimed.")
+            helper._mark_as_claimed(current_tag)
+            self.device.ensure_home()
+            return False
+
+        # 6. 执行领取 (复用 helper 的点击逻辑)
+        helper._perform_claim_click()
+        helper._mark_as_claimed(current_tag)
+        
+        # 7. 更新体力并返回主页
+        self.update_stamina()
+        self.device.ensure_home()
+        
+        self.logger.info("Stamina rescued successfully!")
+        return True
