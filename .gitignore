@@ -60,3 +60,10 @@ assets/temp/
 # OS generated files
 .DS_Store
 Thumbs.db
+# Nuitka Build & Dist
+nuitka_dist/
+*.dist/
+*.build/
+*.onefile-build/
+*.exe
+*.bin
